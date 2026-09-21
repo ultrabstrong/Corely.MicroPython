@@ -1,10 +1,10 @@
-"""ActionCycler: one action active at a time, in order."""
+"""ActionCycler: one action active at a time, in order. And ActionGroup."""
 
 import unittest
 
 import harness  # noqa: F401
 
-from corely.action import Action, ActionCycler
+from corely.action import Action, ActionCycler, ActionGroup
 
 
 class RecordingAction(Action):
@@ -123,6 +123,50 @@ class ActionCyclerTests(unittest.TestCase):
 
 		self.cycler.stop()
 		self.assertFalse(self.cycler.is_running)
+
+
+class ActionGroupTests(unittest.TestCase):
+	def setUp(self):
+		self.log = []
+		self.a = RecordingAction('a', self.log)
+		self.b = RecordingAction('b', self.log)
+		self.group = ActionGroup(self.a, self.b)
+
+	def test_on_switches_every_member(self):
+		self.group.on()
+
+		self.assertEqual(self.log, ['a.on', 'b.on'])
+		self.assertTrue(self.a.is_on)
+		self.assertTrue(self.b.is_on)
+
+	def test_off_switches_every_member(self):
+		self.group.on()
+		self.log.clear()
+
+		self.group.off()
+
+		self.assertEqual(self.log, ['a.off', 'b.off'])
+		self.assertFalse(self.a.is_on)
+		self.assertFalse(self.b.is_on)
+
+	def test_works_inside_a_cycler(self):
+		"""A group is an Action, so a cycler cannot tell the difference."""
+		other = RecordingAction('c', self.log)
+		cycler = ActionCycler([self.group, other])
+
+		cycler.start()
+		self.assertTrue(self.a.is_on)
+
+		cycler.move_next()
+		self.assertFalse(self.a.is_on)
+		self.assertFalse(self.b.is_on)
+		self.assertTrue(other.is_on)
+
+	def test_empty_group_is_harmless(self):
+		empty = ActionGroup()
+
+		empty.on()
+		empty.off()
 
 
 if __name__ == '__main__':

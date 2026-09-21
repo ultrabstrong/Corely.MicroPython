@@ -42,6 +42,59 @@ class SolidLedTests(unittest.TestCase):
 		self.assertFalse(led.is_on)
 
 
+class BrightnessTests(unittest.IsolatedAsyncioTestCase):
+	def test_full_brightness_stays_digital(self):
+		led = Led(18)
+
+		led.on()
+
+		self.assertIsNone(led._pwm)
+		self.assertEqual(led.led.value(), 1)
+
+	def test_dimming_switches_to_pwm(self):
+		led = Led(18, brightness=0.5)
+
+		led.on()
+
+		self.assertIsNotNone(led._pwm)
+		self.assertTrue(0 < led._pwm.duty_u16() < 65535)
+
+	def test_dimming_while_lit_applies_immediately(self):
+		led = Led(18)
+		led.on()
+
+		led.set_brightness(0.25)
+
+		self.assertLess(led._pwm.duty_u16(), 65535 // 2)
+
+	def test_off_darkens_a_dimmed_led(self):
+		led = Led(18, brightness=0.5)
+		led.on()
+
+		led.off()
+
+		self.assertEqual(led._pwm.duty_u16(), 0)
+
+	def test_rejects_out_of_range_brightness(self):
+		led = Led(18)
+
+		with self.assertRaises(ValueError):
+			led.set_brightness(1.5)
+		with self.assertRaises(ValueError):
+			led.set_brightness(-0.1)
+
+	async def test_blinking_respects_brightness(self):
+		led = Led(18, blink_interval_ms=BLINK_MS, brightness=0.5)
+
+		led.on()
+		await asyncio.sleep_ms(SETTLE_MS)
+		duties = list(led._pwm.duties)
+		led.off()
+
+		self.assertIn(0, duties)
+		self.assertTrue(any(0 < duty < 65535 for duty in duties))
+
+
 class BlinkingLedTests(unittest.IsolatedAsyncioTestCase):
 	async def test_blinks_while_on(self):
 		led = Led(18, blink_interval_ms=BLINK_MS)

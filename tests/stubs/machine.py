@@ -28,3 +28,30 @@ class Pin:
 	def release(self):
 		"""Test helper: simulate the button being released."""
 		self._value = 1
+
+
+class PWM:
+	"""Fake PWM channel that records every duty cycle written to it."""
+
+	def __init__(self, pin, freq=None, duty_u16=0):
+		self.pin = pin
+		self._freq = freq
+		self._duty = duty_u16
+		# History of every duty written, so tests can assert on colour changes.
+		self.duties = []
+
+	def freq(self, value=None):
+		if value is None:
+			return self._freq
+		self._freq = value
+		return None
+
+	def duty_u16(self, value=None):
+		if value is None:
+			return self._duty
+		self._duty = value
+		self.duties.append(value)
+		return None
+
+	def deinit(self):
+		self._duty = 0

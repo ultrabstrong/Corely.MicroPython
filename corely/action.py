@@ -85,6 +85,30 @@ class TaskAction(Action):
 				self.cleanup()
 
 
+class ActionGroup(Action):
+	"""Switches several actions together, as if they were one.
+
+	Useful where one state should show up in more than one place:
+
+		connected = ActionGroup(green_led, rgb.steady(GREEN))
+	"""
+
+	def __init__(self, *actions):
+		"""
+		Args:
+			*actions: The Action objects to switch together
+		"""
+		self.actions = actions
+
+	def on(self):
+		for action in self.actions:
+			action.on()
+
+	def off(self):
+		for action in self.actions:
+			action.off()
+
+
 class ActionCycler:
 	"""Activates one action at a time from an ordered list."""
 
