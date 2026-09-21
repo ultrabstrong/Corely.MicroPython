@@ -30,8 +30,8 @@ it moves to its own repo. Project-level tests live in `pico2/tests/`.
 | Module | Tests |
 |--------|-------|
 | `corely/action.py` | task start/cancel, cleanup, restart, double on/off |
-| `corely/cycler.py` | one action on at a time, off-before-on ordering, wraparound |
-| `corely/led.py` | blinking toggles the pin, off leaves it dark and silent |
+| `corely/action.py` (`ActionCycler`) | one action on at a time, off-before-on ordering, wraparound |
+| `corely/led.py` | solid and blinking, mode switching, two states sharing one LED |
 | `corely/button.py` | one event per press, no repeat while held, held-at-startup |
 | `corely/wifi.py` | connect/timeout, state machine, non-blocking checks |
 | `corely/ble_peripheral.py` | advertising, connect/disconnect actions, writes, notify |
@@ -49,7 +49,7 @@ of returning `None` from `advertise()` when advertising is stopped. It does not
 test BLE itself - a fake radio would only test the fake.
 
 Verified on hardware separately: advertising, a phone connecting, and the echo
-round trip via `pico2/sandbox/demos/ble_demo.py`.
+round trip via `pico2/demos/implementations/ble_demo.py`.
 
 `corely/ble_central.py` has no host tests, and only its scanning path has run on
 hardware. Connecting, discovery and notifications need a second BLE device.

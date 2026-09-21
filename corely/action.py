@@ -1,14 +1,14 @@
 """Async action primitives.
 
-An Action is anything that can be switched on and off.
-
-Unlike the sync lib's ActionHandler there is no update(): work that needs to
-keep running lives in a task the action owns, so nothing has to be pumped from
-a main loop and two owners can never double-update the same action.
+An Action is anything that can be switched on and off. Work that needs to keep
+running lives in a task the action owns, so nothing has to be pumped from a
+main loop and two owners can never double-update the same action.
 
 Contract:
 	on()  - activate. Must not block. Starts a task if there is ongoing work.
 	off() - deactivate. Must not block, and must be safe to call twice.
+
+`ActionCycler` steps through a list of actions, one active at a time.
 """
 
 import asyncio
@@ -83,3 +83,53 @@ class TaskAction(Action):
 			if generation == self._generation:
 				self._task = None
 				self.cleanup()
+
+
+class ActionCycler:
+	"""Activates one action at a time from an ordered list."""
+
+	def __init__(self, actions):
+		"""
+		Args:
+			actions: List of Action objects to cycle through
+		"""
+		self.actions = actions
+		self.current_index = 0
+		self._running = False
+
+	@property
+	def current(self):
+		"""The action the cycle is currently on, running or not."""
+		return self.actions[self.current_index]
+
+	@property
+	def is_running(self):
+		"""True while one of the actions is on."""
+		return self._running
+
+	def start(self):
+		"""Turn on the current action. Does nothing if already running."""
+		if not self._running:
+			self._running = True
+			self.current.on()
+
+	def stop(self):
+		"""Turn off the current action. Does nothing if already stopped."""
+		if self._running:
+			self._running = False
+			self.current.off()
+
+	def move_next(self):
+		"""Turn off the current action and turn on the next one (wraps around).
+
+		Starts the cycle if it is not running yet, so a forgotten start() shows
+		up as a late first action rather than a cycler whose idea of "current"
+		disagrees with the hardware.
+		"""
+		if not self._running:
+			self.start()
+			return
+
+		self.current.off()
+		self.current_index = (self.current_index + 1) % len(self.actions)
+		self.current.on()

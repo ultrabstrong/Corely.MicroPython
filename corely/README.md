@@ -41,7 +41,7 @@ Action owns. Subclass `TaskAction`, implement `run()` and `cleanup()`, and
 `on()`/`off()` handle the task lifecycle:
 
 ```python
-class LedBlinking(TaskAction):
+class Led(TaskAction):
     async def run(self):
         while True:
             self.led.value(1)
@@ -53,6 +53,20 @@ class LedBlinking(TaskAction):
         self.led.value(0)
 ```
 
+`Led` is solid by default and only starts that task when it is blinking, so
+steady LEDs cost nothing to run.
+
+Where two states share one LED, `blinking()` and `steady()` hand out Actions
+that drive the same pin, so the states cannot fight over it:
+
+```python
+onboard = Led("LED")
+peripheral = BleUartPeripheral(
+    advertising_action=onboard.blinking(500),
+    connected_action=onboard.steady(),
+)
+```
+
 Long-running components that are not Actions (buttons, monitors, BLE roles)
 expose `async def run()`; start them with `asyncio.create_task()` and combine
 them with `asyncio.gather()`.
@@ -62,10 +76,9 @@ them with `asyncio.gather()`.
 MicroPython automatically searches `/lib/` for modules:
 
 ```python
-from corely.action import Action, TaskAction
-from corely.button import ButtonPressed, ButtonCycle
-from corely.cycler import ActionCycler
-from corely.led import LedSolid, LedBlinking
+from corely.action import Action, ActionCycler, TaskAction
+from corely.button import Button
+from corely.led import Led
 from corely.message import PrintMessage
 from corely.wifi import WiFiConnection, WiFiConnectAction, WiFiDisconnectAction, WiFiMonitor
 from corely.ble_peripheral import BleUartPeripheral
@@ -78,8 +91,8 @@ Typical shape of a project:
 import asyncio
 
 async def main():
-    led = LedBlinking("LED", blink_interval_ms=250)
-    button = ButtonCycle(pin_number=1, action_cycler=cycler)
+    led = Led("LED", blink_interval_ms=250)
+    button = Button(pin_number=1, on_press=cycler.move_next)
 
     led.on()
     await asyncio.gather(
@@ -93,11 +106,12 @@ asyncio.run(main())
 
 Every module is a flat file in this folder:
 
-- `action.py` - `Action` and `TaskAction` base classes
-- `cycler.py` - `ActionCycler`, activates one action at a time
-- `led.py` - `LedSolid`, `LedBlinking`
+- `action.py` - `Action` and `TaskAction` base classes, plus `ActionCycler`,
+  which activates one action at a time
+- `led.py` - `Led`, solid or blinking, with `blinking()`/`steady()` views so two
+  states can share one LED
 - `message.py` - `PrintMessage`
-- `button.py` - `ButtonPressed`, `ButtonCycle` (polled, debounced)
+- `button.py` - `Button`, polled and debounced, calling any function on press
 - `wifi.py` - connection, connect/disconnect actions, `WiFiMonitor`
 - `ble_uart.py` - Nordic UART Service UUIDs
 - `ble_peripheral.py` - `BleUartPeripheral` (something connects to this device)
@@ -105,5 +119,4 @@ Every module is a flat file in this folder:
 
 ## Projects using this library
 
-- buttons
-- sandbox
+- `pico2/demos`

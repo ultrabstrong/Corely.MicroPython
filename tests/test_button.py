@@ -1,7 +1,7 @@
-"""Button handlers: one event per press, no repeat while held.
+"""Button: one event per press, whatever the press is wired to.
 
 Timings here are deliberately generous: these tests run on a PC event loop
-whose timer granularity is far coarser than the Pico's, so short polls would
+whose timer granularity is far coarser than the device's, so short polls would
 make them flaky rather than meaningful.
 """
 
@@ -10,9 +10,8 @@ import unittest
 
 import harness  # noqa: F401
 
-from corely.action import Action
-from corely.button import ButtonPressed, ButtonCycle
-from corely.cycler import ActionCycler
+from corely.action import Action, ActionCycler
+from corely.button import Button
 
 
 POLL_MS = 5
@@ -46,15 +45,15 @@ async def tap(pin):
 	await asyncio.sleep_ms(SETTLE_MS)
 
 
-class ButtonPressedTests(unittest.IsolatedAsyncioTestCase):
+class ButtonTests(unittest.IsolatedAsyncioTestCase):
 	def make(self):
 		presses = []
-		button = ButtonPressed(
+		button = Button(
 			0, lambda: presses.append(1), debounce_ms=DEBOUNCE_MS, poll_ms=POLL_MS
 		)
 		return button, presses
 
-	async def test_calls_action_once_per_press(self):
+	async def test_calls_on_press_once_per_press(self):
 		button, presses = self.make()
 		task = await start(button)
 
@@ -92,13 +91,14 @@ class ButtonPressedTests(unittest.IsolatedAsyncioTestCase):
 		self.assertEqual(len(presses), 1)
 
 
-class ButtonCycleTests(unittest.IsolatedAsyncioTestCase):
+class ButtonDrivingACyclerTests(unittest.IsolatedAsyncioTestCase):
 	async def test_press_advances_the_cycler(self):
+		"""The case that used to need its own class."""
 		first, second = FlagAction(), FlagAction()
 		cycler = ActionCycler([first, second])
-		cycler.activate_current()
+		cycler.start()
 
-		button = ButtonCycle(1, cycler, debounce_ms=DEBOUNCE_MS, poll_ms=POLL_MS)
+		button = Button(1, cycler.move_next, debounce_ms=DEBOUNCE_MS, poll_ms=POLL_MS)
 		task = await start(button)
 
 		await tap(button.button)

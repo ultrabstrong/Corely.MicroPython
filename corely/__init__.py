@@ -2,7 +2,7 @@
 
 Import submodules directly so a project only pays for what it uses:
 
-	from corely.led import LedBlinking
+	from corely.led import Led
 	from corely.wifi import WiFiConnection
 
 This file stays empty of re-exports on purpose. Pulling every module in here
