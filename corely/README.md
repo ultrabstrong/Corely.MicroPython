@@ -1,8 +1,9 @@
 # Corely
 
-Asyncio building blocks for MicroPython devices: actions, LEDs, buttons, WiFi
-and BLE. Nothing in here is board-specific - it is developed against a
-Raspberry Pi Pico 2 W, but only relies on `machine`, `network` and `aioble`.
+Asyncio building blocks for MicroPython devices: actions, LEDs, RGB LEDs,
+buttons, WiFi and BLE. Nothing in here is board-specific - it is developed
+against a Raspberry Pi Pico 2 W, but only relies on `machine`, `network` and
+`aioble`.
 
 Corely lives here for now, but it is meant to move into its own repo, so it
 stays free of project-specific code.
@@ -67,18 +68,62 @@ peripheral = BleUartPeripheral(
 )
 ```
 
+`ActionGroup` switches several actions as one, for a state that should show up
+in more than one place:
+
+```python
+connected = ActionGroup(green_led, rgb.steady('green'))
+```
+
 Long-running components that are not Actions (buttons, monitors, BLE roles)
 expose `async def run()`; start them with `asyncio.create_task()` and combine
 them with `asyncio.gather()`.
+
+## RGB LEDs
+
+`RgbLed` treats a four-pin RGB LED as one component, driving each channel with
+PWM so colours mix properly:
+
+```python
+rgb = RgbLed(7, 8, 9)              # common cathode; active_high=False for anode
+rgb.solid('orange'); rgb.on()      # a name from COLOURS
+rgb.solid((255, 40, 90))           # or any (r, g, b), 0-255
+rgb.blink(interval_ms=250, colour='teal')
+rgb.rainbow(cycle_ms=3000)         # sweeps the hue wheel, 60 steps per lap
+rgb.off()
+```
+
+It has the same `steady()` / `blinking()` views as `Led`, plus `cycling()` for
+the rainbow, so one RGB LED can show a whole state machine:
+
+```python
+monitor = WiFiMonitor(
+    wifi,
+    connected_action=rgb.steady('green'),
+    no_internet_action=rgb.blinking('yellow'),
+    disconnected_action=rgb.steady('red'),
+)
+```
+
+**Colour balance.** Green and blue dies are far more efficient than red ones,
+so equal duty cycles do not look like equal light - "yellow" comes out green.
+`channel_scale` corrects that, defaulting to `(1.0, 0.20, 0.5)`, which was
+tuned by eye against a real LED. Pass `(1.0, 1.0, 1.0)` for raw output, or your
+own gains if your LED differs.
+
+**Brightness.** Both `Led` and `RgbLed` take `brightness` (0.0-1.0). For `Led`,
+anything below full switches the pin to PWM on demand - so a pin without PWM
+(the Pico W's onboard LED lives on the wireless chip) can only run at full.
 
 ## Usage in projects
 
 MicroPython automatically searches `/lib/` for modules:
 
 ```python
-from corely.action import Action, ActionCycler, TaskAction
+from corely.action import Action, ActionCycler, ActionGroup, TaskAction
 from corely.button import Button
 from corely.led import Led
+from corely.rgb_led import RgbLed, RED, GREEN, BLUE, COLOURS
 from corely.message import PrintMessage
 from corely.wifi import WiFiConnection, WiFiConnectAction, WiFiDisconnectAction, WiFiMonitor
 from corely.ble_peripheral import BleUartPeripheral
@@ -106,10 +151,12 @@ asyncio.run(main())
 
 Every module is a flat file in this folder:
 
-- `action.py` - `Action` and `TaskAction` base classes, plus `ActionCycler`,
-  which activates one action at a time
-- `led.py` - `Led`, solid or blinking, with `blinking()`/`steady()` views so two
-  states can share one LED
+- `action.py` - `Action` and `TaskAction` base classes, plus `ActionCycler`
+  (one action at a time) and `ActionGroup` (several as one)
+- `led.py` - `Led`, solid or blinking, dimmable, with `blinking()`/`steady()`
+  views so two states can share one LED
+- `rgb_led.py` - `RgbLed` and the colour palette: any colour over PWM, plus
+  blink and rainbow modes
 - `message.py` - `PrintMessage`
 - `button.py` - `Button`, polled and debounced, calling any function on press
 - `wifi.py` - connection, connect/disconnect actions, `WiFiMonitor`

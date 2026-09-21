@@ -16,7 +16,9 @@ every test module imports it first:
 
 - `stubs/machine.py` and `stubs/network.py` replace the device-only modules.
   The fake `Pin` records every write (so blink patterns can be asserted) and
-  can be pressed and released; the fake `WLAN` can be told to fail to connect.
+  can be pressed and released; the fake `PWM` records every duty (so colours
+  and brightness can be asserted); the fake `WLAN` can be told to fail to
+  connect.
 - `time.ticks_ms()`, `asyncio.sleep_ms()` and `asyncio.wait_for_ms()` are
   MicroPython-only, so they are patched onto the CPython modules.
 - The repo root goes on `sys.path`, so `corely.*` imports resolve the same way
@@ -31,7 +33,9 @@ it moves to its own repo. Project-level tests live in `pico2/tests/`.
 |--------|-------|
 | `corely/action.py` | task start/cancel, cleanup, restart, double on/off |
 | `corely/action.py` (`ActionCycler`) | one action on at a time, off-before-on ordering, wraparound |
-| `corely/led.py` | solid and blinking, mode switching, two states sharing one LED |
+| `corely/action.py` (`ActionGroup`) | switching members together, nesting inside a cycler |
+| `corely/led.py` | solid and blinking, mode switching, brightness, two states sharing one LED |
+| `corely/rgb_led.py` | colour resolution, hue wheel, modes, polarity, channel scaling |
 | `corely/button.py` | one event per press, no repeat while held, held-at-startup |
 | `corely/wifi.py` | connect/timeout, state machine, non-blocking checks |
 | `corely/ble_peripheral.py` | advertising, connect/disconnect actions, writes, notify |
