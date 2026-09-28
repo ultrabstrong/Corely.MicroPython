@@ -96,7 +96,7 @@ class ButtonDrivingACyclerTests(unittest.IsolatedAsyncioTestCase):
 		"""The case that used to need its own class."""
 		first, second = FlagAction(), FlagAction()
 		cycler = ActionCycler([first, second])
-		cycler.start()
+		cycler.on()
 
 		button = Button(1, cycler.move_next, debounce_ms=DEBOUNCE_MS, poll_ms=POLL_MS)
 		task = await start(button)

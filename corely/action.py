@@ -8,7 +8,8 @@ Contract:
 	on()  - activate. Must not block. Starts a task if there is ongoing work.
 	off() - deactivate. Must not block, and must be safe to call twice.
 
-`ActionCycler` steps through a list of actions, one active at a time.
+`ActionCycler` steps through a list of actions, one active at a time, and is an
+Action itself, so cyclers nest.
 """
 
 import asyncio
@@ -109,8 +110,12 @@ class ActionGroup(Action):
 			action.off()
 
 
-class ActionCycler:
-	"""Activates one action at a time from an ordered list."""
+class ActionCycler(Action):
+	"""Activates one action at a time from an ordered list.
+
+	It is an Action itself, so a cycler can sit inside another cycler or an
+	ActionGroup, or be handed to anything that switches Actions off.
+	"""
 
 	def __init__(self, actions):
 		"""
@@ -119,7 +124,7 @@ class ActionCycler:
 		"""
 		self.actions = actions
 		self.current_index = 0
-		self._running = False
+		self._on = False
 
 	@property
 	def current(self):
@@ -127,31 +132,34 @@ class ActionCycler:
 		return self.actions[self.current_index]
 
 	@property
-	def is_running(self):
+	def is_on(self):
 		"""True while one of the actions is on."""
-		return self._running
+		return self._on
 
-	def start(self):
-		"""Turn on the current action. Does nothing if already running."""
-		if not self._running:
-			self._running = True
+	def on(self):
+		"""Turn on the current action. Does nothing if already on."""
+		if not self._on:
+			self._on = True
 			self.current.on()
 
-	def stop(self):
-		"""Turn off the current action. Does nothing if already stopped."""
-		if self._running:
-			self._running = False
+	def off(self):
+		"""Turn off the current action. Does nothing if already off.
+
+		The position is kept, so the next on() resumes where it left off.
+		"""
+		if self._on:
+			self._on = False
 			self.current.off()
 
 	def move_next(self):
 		"""Turn off the current action and turn on the next one (wraps around).
 
-		Starts the cycle if it is not running yet, so a forgotten start() shows
-		up as a late first action rather than a cycler whose idea of "current"
-		disagrees with the hardware.
+		Turns the cycle on if it is off, so a forgotten on() shows up as a late
+		first action rather than a cycler whose idea of "current" disagrees
+		with the hardware.
 		"""
-		if not self._running:
-			self.start()
+		if not self._on:
+			self.on()
 			return
 
 		self.current.off()
