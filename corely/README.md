@@ -115,6 +115,50 @@ own gains if your LED differs.
 anything below full switches the pin to PWM on demand - so a pin without PWM
 (the Pico W's onboard LED lives on the wireless chip) can only run at full.
 
+## Sensors
+
+Sensors are read, not switched, so they are not Actions. They follow Corely's
+other two shapes: a `Sensor` base class owns error handling while each board
+implements `async def read()` (as `TaskAction` owns the task and subclasses
+implement `run()`), and a long-running `SensorSampler` reads them all from its
+own `run()` (as `Button` and `WiFiMonitor` do).
+
+```python
+bme = Bme280(i2c)
+sampler = SensorSampler([bme, Tsl2591(i2c), Sgp40(i2c, climate=bme)])
+asyncio.create_task(sampler.run())          # one sample a second
+
+readings = sampler.readings                 # latest, any time
+readings = await sampler.next()             # or wait for the next sample
+```
+
+Every reading is a flat dict of named values:
+
+| Class | Keys |
+|-------|------|
+| `Bme280` | `temperature` (C), `humidity` (%), `pressure` (hPa) |
+| `Tsl2591` | `lux`, `light_full`, `light_ir` (raw counts) |
+| `Sgp40` | `voc_index` (`None` while warming up), `voc_raw` |
+
+- **Nothing blocks.** The BME280 measures continuously so a read is a register
+  fetch, and the SGP40's 30ms measurement is awaited. Both are small
+  subclasses of the vendored drivers, which stay unedited.
+- **A failed read empties that sensor's keys** rather than raising or leaving
+  a stale number. `sensor.error` keeps the exception.
+- **Create the sampler once, for the life of the program.** The SGP40's VOC
+  index learns its baseline from one sample a second over hours; recreating
+  it starts that over. Keep `interval_ms` at 1000 when an `Sgp40` is in it.
+- **`Sgp40(climate=...)` compensates** with another sensor's latest humidity
+  and temperature, falling back to the chip's defaults (50%, 25C).
+- **Opening sensors is the app's job.** A constructor raises if its chip is
+  missing; whether to carry on without it is the application's call.
+- **Tsl2591 saturates at `Tsl2591.MAX_LUX`** (about 6000 at the default gain)
+  and reports that rather than raising.
+
+Each class imports its driver when created, so `corely.sensors` costs nothing
+for boards a project does not use. The drivers - `bme280`, `tsl2591`, `sgp40`
+and `voc_algorithm` - are vendored; see `vendor/README.md`.
+
 ## Usage in projects
 
 MicroPython automatically searches `/lib/` for modules:
@@ -128,6 +172,7 @@ from corely.message import PrintMessage
 from corely.wifi import WiFiConnection, WiFiConnectAction, WiFiDisconnectAction, WiFiMonitor
 from corely.ble_peripheral import BleUartPeripheral
 from corely.ble_central import BleUartCentral
+from corely.sensors import Bme280, Tsl2591, Sgp40, SensorSampler
 ```
 
 Typical shape of a project:
@@ -163,6 +208,8 @@ Every module is a flat file in this folder:
 - `ble_uart.py` - Nordic UART Service UUIDs
 - `ble_peripheral.py` - `BleUartPeripheral` (something connects to this device)
 - `ble_central.py` - `BleUartCentral` (this device connects to a peripheral)
+- `sensors.py` - the `Sensor` base, `Bme280`, `Tsl2591` and `Sgp40`, and the
+  `SensorSampler` that owns them
 
 ## Projects using this library
 
