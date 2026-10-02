@@ -42,23 +42,39 @@ Action owns. Subclass `TaskAction`, implement `run()` and `cleanup()`, and
 `on()`/`off()` handle the task lifecycle:
 
 ```python
-class Led(TaskAction):
+class Blinker(TaskAction):
     async def run(self):
         while True:
-            self.led.value(1)
-            await asyncio.sleep_ms(self.blink_interval_ms)
-            self.led.value(0)
-            await asyncio.sleep_ms(self.blink_interval_ms)
+            self.pin.value(1)
+            await asyncio.sleep_ms(self.interval_ms)
+            self.pin.value(0)
+            await asyncio.sleep_ms(self.interval_ms)
 
     def cleanup(self):
-        self.led.value(0)
+        self.pin.value(0)
 ```
 
-`Led` is solid by default and only starts that task when it is blinking, so
-steady LEDs cost nothing to run.
+`Led` is solid by default and only starts its task when blinking or pulsing,
+so steady LEDs cost nothing to run:
 
-Where two states share one LED, `blinking()` and `steady()` hand out Actions
-that drive the same pin, so the states cannot fight over it:
+```python
+Led(18)                            # solid
+Led(18, blink_interval_ms=250)     # blinking
+Led(18).pulse(2000)                # pulsing: a 2s fade up and down
+Led(2, active_high=False)          # an LED that lights when the pin goes low
+```
+
+Blink and pulse are one waveform walk - a square wave and a sine. Blink only
+asks for full or nothing, so it works on a plain digital pin (the Pico W's
+onboard LED has no PWM); pulse needs the levels in between, so it sets up PWM
+and raises on a pin without it. `brightness` is the waveform's peak.
+
+`active_high=False` is for LEDs wired to sink current through the pin - most
+ESP32 and ESP8266 onboard LEDs. A new LED starts dark whichever way it is
+wired.
+
+Where two states share one LED, `blinking()`, `pulsing()` and `steady()` hand
+out Actions that drive the same pin, so the states cannot fight over it:
 
 ```python
 onboard = Led("LED")
@@ -89,12 +105,13 @@ rgb = RgbLed(7, 8, 9)              # common cathode; active_high=False for anode
 rgb.solid('orange'); rgb.on()      # a name from COLOURS
 rgb.solid((255, 40, 90))           # or any (r, g, b), 0-255
 rgb.blink(interval_ms=250, colour='teal')
+rgb.pulse(period_ms=2000, colour='purple')  # fades the colour, keeping its hue
 rgb.rainbow(cycle_ms=3000)         # sweeps the hue wheel, 60 steps per lap
 rgb.off()
 ```
 
-It has the same `steady()` / `blinking()` views as `Led`, plus `cycling()` for
-the rainbow, so one RGB LED can show a whole state machine:
+It has the same `steady()` / `blinking()` / `pulsing()` views as `Led`, plus
+`cycling()` for the rainbow, so one RGB LED can show a whole state machine:
 
 ```python
 monitor = WiFiMonitor(
@@ -144,6 +161,10 @@ Telling gestures apart costs latency, so it is only paid for when asked:
 | `repeat_ms` | on the way down, then every `repeat_ms` while held |
 | `on_long_press` or `long_presses` | on release, if it was not a long press |
 | `on_double_press` | `double_press_ms` after release, if no second press came |
+
+**Wiring.** Active-low with an internal pull-up by default (button to GND).
+`active_low=False` is for a button to 3V3 and picks a pull-down; `pull=None`
+turns the internal pull off for boards with their own resistors.
 
 A long press never also counts as a press, and neither half of a double press
 does. `repeat_ms` cannot be combined with either, since both hold `on_press`
@@ -232,13 +253,15 @@ Every module is a flat file in this folder:
 
 - `action.py` - `Action` and `TaskAction` base classes, plus `ActionCycler`
   (one action at a time) and `ActionGroup` (several as one)
-- `led.py` - `Led`, solid or blinking, dimmable, with `blinking()`/`steady()`
-  views so two states can share one LED
+- `led.py` - `Led`, solid, blinking or pulsing, dimmable, `active_high` for
+  LEDs that sink current, with `steady()`/`blinking()`/`pulsing()` views so
+  several states can share one LED
 - `rgb_led.py` - `RgbLed` and the colour palette: any colour over PWM, plus
-  blink and rainbow modes
+  blink, pulse and rainbow modes
 - `message.py` - `PrintMessage`
 - `button.py` - `Button`, polled and debounced, calling a function per
-  gesture: press, release, long press, double press, key-repeat
+  gesture: press, release, long press, double press, key-repeat; `active_low`
+  and `pull` for other wirings
 - `wifi.py` - connection, connect/disconnect actions, `WiFiMonitor`
 - `ble_uart.py` - Nordic UART Service UUIDs
 - `ble_peripheral.py` - `BleUartPeripheral` (something connects to this device)

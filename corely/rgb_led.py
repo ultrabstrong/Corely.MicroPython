@@ -25,6 +25,7 @@ import asyncio
 from machine import Pin, PWM
 
 from corely.action import Action, TaskAction
+from corely.led import sine_wave, square_wave
 
 
 # Named colours, as (red, green, blue) 0-255.
@@ -59,6 +60,7 @@ COLOURS = {
 
 _MODE_SOLID = 'solid'
 _MODE_BLINK = 'blink'
+_MODE_PULSE = 'pulse'
 _MODE_RAINBOW = 'rainbow'
 
 
@@ -107,13 +109,17 @@ def hue_to_colour(hue):
 
 
 class RgbLed(TaskAction):
-	"""One RGB LED: on/off, any colour, blinking, or cycling the rainbow.
+	"""One RGB LED: on/off, any colour, blinking, pulsing, or the rainbow.
 
-	Solid is the default and starts no task. Blink and rainbow each run in the
-	task this Action owns, so off() stops them.
+	Solid is the default and starts no task. Blink, pulse and rainbow each run
+	in the task this Action owns, so off() stops them. Blink and pulse are the
+	same waveform walk as Led's - a square and a sine - applied to the colour's
+	level, so a pulsing colour keeps its hue.
 	"""
 
 	DEFAULT_BLINK_MS = 500
+	DEFAULT_PULSE_MS = 2000
+	PULSE_STEPS = 50
 	DEFAULT_RAINBOW_MS = 1000
 	RAINBOW_STEPS = 60
 	PWM_FREQ = 1000
@@ -153,6 +159,7 @@ class RgbLed(TaskAction):
 		self.debug = debug
 
 		self.blink_interval_ms = self.DEFAULT_BLINK_MS
+		self.pulse_ms = self.DEFAULT_PULSE_MS
 		self.rainbow_cycle_ms = self.DEFAULT_RAINBOW_MS
 		self._mode = _MODE_SOLID
 		self._active = False
@@ -167,7 +174,7 @@ class RgbLed(TaskAction):
 
 	@property
 	def mode(self):
-		"""One of 'solid', 'blink' or 'rainbow'."""
+		"""One of 'solid', 'blink', 'pulse' or 'rainbow'."""
 		return self._mode
 
 	def on(self):
@@ -208,6 +215,21 @@ class RgbLed(TaskAction):
 			self.colour = resolve_colour(colour)
 		self._switch_mode(_MODE_BLINK)
 
+	def pulse(self, period_ms=None, colour=None):
+		"""Switch to pulsing - fading the colour up and down - taking effect
+		immediately if lit.
+
+		Args:
+			period_ms: Time for one full breath, dark to full to dark, or None
+				to keep the current one
+			colour: New colour, or None to keep the current one
+		"""
+		if period_ms is not None:
+			self.pulse_ms = period_ms
+		if colour is not None:
+			self.colour = resolve_colour(colour)
+		self._switch_mode(_MODE_PULSE)
+
 	def rainbow(self, cycle_ms=None):
 		"""Switch to cycling the whole hue wheel, taking effect immediately.
 
@@ -238,21 +260,30 @@ class RgbLed(TaskAction):
 		"""An Action that cycles the rainbow while active."""
 		return _RgbMode(self, _MODE_RAINBOW, cycle_ms=cycle_ms)
 
+	def pulsing(self, colour, period_ms=None):
+		"""An Action that pulses this colour while active."""
+		return _RgbMode(self, _MODE_PULSE, colour=colour, interval_ms=period_ms)
+
 	async def run(self):
 		if self._mode == _MODE_BLINK:
-			await self._blink_loop()
+			# Two steps of one interval each: lit, then dark.
+			await self._wave_loop(square_wave, 2, 2 * self.blink_interval_ms)
+		elif self._mode == _MODE_PULSE:
+			await self._wave_loop(sine_wave, self.PULSE_STEPS, self.pulse_ms)
 		else:
 			await self._rainbow_loop()
 
 	def cleanup(self):
 		self._write(BLACK)
 
-	async def _blink_loop(self):
+	async def _wave_loop(self, shape, steps, period_ms):
+		"""Walk a waveform over the current colour, one level per step."""
+		step_ms = max(1, period_ms // steps)
+		step = 0
 		while True:
-			self._write(self.colour)
-			await asyncio.sleep_ms(self.blink_interval_ms)
-			self._write(BLACK)
-			await asyncio.sleep_ms(self.blink_interval_ms)
+			self._write(self.colour, shape(step / steps))
+			step = (step + 1) % steps
+			await asyncio.sleep_ms(step_ms)
 
 	async def _rainbow_loop(self):
 		step_ms = max(1, self.rainbow_cycle_ms // self.RAINBOW_STEPS)
@@ -278,10 +309,15 @@ class RgbLed(TaskAction):
 			else:
 				super().on()
 
-	def _write(self, colour):
-		"""Drive the three channels, applying scale, brightness and polarity."""
+	def _write(self, colour, fraction=1.0):
+		"""Drive the three channels, applying scale, brightness and polarity.
+
+		Args:
+			colour: (r, g, b), 0-255
+			fraction: How much of that colour, 0.0-1.0 - the waveform level
+		"""
 		for channel, value, scale in zip(self._channels, colour, self.channel_scale):
-			level = int(value * scale * self.brightness * 257)  # 0-255 -> 0-65535
+			level = int(value * scale * self.brightness * fraction * 257)  # 0-255 -> 0-65535
 			level = min(65535, max(0, level))
 			channel.duty_u16(level if self.active_high else 65535 - level)
 
@@ -289,7 +325,8 @@ class RgbLed(TaskAction):
 class _RgbMode(Action):
 	"""Drives a shared RgbLed into one mode while active.
 
-	Created by RgbLed.steady(), .blinking() and .cycling() rather than directly.
+	Created by RgbLed.steady(), .blinking(), .pulsing() and .cycling() rather
+	than directly.
 	"""
 
 	def __init__(self, rgb, mode, colour=None, interval_ms=None, cycle_ms=None):
@@ -304,6 +341,8 @@ class _RgbMode(Action):
 			self.rgb.solid(self.colour)
 		elif self.mode == _MODE_BLINK:
 			self.rgb.blink(interval_ms=self.interval_ms, colour=self.colour)
+		elif self.mode == _MODE_PULSE:
+			self.rgb.pulse(period_ms=self.interval_ms, colour=self.colour)
 		else:
 			self.rgb.rainbow(cycle_ms=self.cycle_ms)
 		self.rgb.on()

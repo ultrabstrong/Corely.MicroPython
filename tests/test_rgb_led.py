@@ -250,5 +250,63 @@ class SharedRgbTests(unittest.IsolatedAsyncioTestCase):
 		self.assertEqual(levels(rgb), (0, 0, 0))
 
 
+PULSE_MS = 200
+
+
+class PulseTests(unittest.IsolatedAsyncioTestCase):
+	def setUp(self):
+		# Steps coarse enough for the PC timer to see each one.
+		self._steps = RgbLed.PULSE_STEPS
+		RgbLed.PULSE_STEPS = 16
+
+	def tearDown(self):
+		RgbLed.PULSE_STEPS = self._steps
+
+	async def pulse(self, colour):
+		rgb = RgbLed(7, 8, 9, channel_scale=RAW)
+		rgb.pulse(PULSE_MS, colour=colour)
+		rgb.on()
+		await asyncio.sleep_ms(int(PULSE_MS * 1.5))
+		rgb.off()
+		return rgb
+
+	async def test_pulse_writes_levels_in_between(self):
+		rgb = await self.pulse(RED)
+
+		red = rgb._channels[0].duties
+		self.assertGreater(len({duty for duty in red if 0 < duty < FULL}), 5)
+		self.assertTrue(any(b < a for a, b in zip(red, red[1:])))
+
+	async def test_pulse_keeps_the_hue(self):
+		"""Both channels of an orange fade together, so it stays orange."""
+		rgb = await self.pulse((255, 128, 0))
+
+		red, green, blue = (channel.duties for channel in rgb._channels)
+		for r, g in zip(red, green):
+			if r > 2000:
+				self.assertAlmostEqual(g / r, 128 / 255, delta=0.02)
+		self.assertEqual(set(blue), {0})
+
+	async def test_off_stops_pulsing_dark(self):
+		rgb = await self.pulse(GREEN)
+		settled = len(rgb._channels[1].duties)
+		await asyncio.sleep_ms(SETTLE_MS)
+
+		self.assertEqual(levels(rgb), (0, 0, 0))
+		self.assertEqual(len(rgb._channels[1].duties), settled)
+
+	async def test_pulsing_view_pulses_its_colour(self):
+		rgb = RgbLed(7, 8, 9, channel_scale=RAW)
+		view = rgb.pulsing('blue', period_ms=PULSE_MS)
+
+		view.on()
+		await asyncio.sleep_ms(SETTLE_MS)
+		self.assertEqual(rgb.mode, 'pulse')
+		self.assertEqual(rgb.colour, BLUE)
+
+		view.off()
+		self.assertEqual(levels(rgb), (0, 0, 0))
+
+
 if __name__ == '__main__':
 	unittest.main()

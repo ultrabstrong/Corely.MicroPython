@@ -12,6 +12,7 @@ import harness  # noqa: F401
 
 from corely.action import Action, ActionCycler
 from corely.button import Button
+from machine import Pin
 
 
 POLL_MS = 5
@@ -354,6 +355,70 @@ class LongPressesTests(unittest.IsolatedAsyncioTestCase):
 		self.assertFalse(button.is_pressed)
 		button.button.press()
 		self.assertTrue(button.is_pressed)
+
+
+class PolarityTests(unittest.IsolatedAsyncioTestCase):
+	"""active_low=False: a button wired to 3V3 reads high when pressed."""
+
+	def make(self, **extra):
+		presses = []
+		button = Button(
+			0, lambda: presses.append(1), debounce_ms=DEBOUNCE_MS, poll_ms=POLL_MS,
+			active_low=False, **extra,
+		)
+		return button, presses
+
+	async def test_one_press_per_press(self):
+		button, presses = self.make()
+		task = await start(button)
+
+		await tap(button.button)
+		await tap(button.button)
+		task.cancel()
+
+		self.assertEqual(len(presses), 2)
+
+	async def test_holding_does_not_repeat(self):
+		button, presses = self.make()
+		task = await start(button)
+
+		button.button.press()
+		await asyncio.sleep_ms(SETTLE_MS * 4)
+		task.cancel()
+
+		self.assertEqual(len(presses), 1)
+
+	async def test_held_at_startup_is_ignored_until_released(self):
+		button, presses = self.make()
+		button.button.press()
+
+		task = asyncio.create_task(button.run())
+		await asyncio.sleep_ms(SETTLE_MS)
+		self.assertEqual(presses, [])
+
+		button.button.release()
+		await asyncio.sleep_ms(SETTLE_MS)
+		await tap(button.button)
+		task.cancel()
+
+		self.assertEqual(len(presses), 1)
+
+	def test_is_pressed_follows_polarity(self):
+		button, _ = self.make()
+		self.assertFalse(button.is_pressed)
+		self.assertEqual(button.button.value(), 0)
+
+		button.button.press()
+		self.assertTrue(button.is_pressed)
+		self.assertEqual(button.button.value(), 1)
+
+	def test_pull_matches_polarity_by_default(self):
+		self.assertEqual(Button(0).button.pull, Pin.PULL_UP)
+		self.assertEqual(Button(0, active_low=False).button.pull, Pin.PULL_DOWN)
+
+	def test_explicit_pull_wins(self):
+		self.assertIsNone(Button(0, pull=None).button.pull)
+		self.assertEqual(Button(0, active_low=False, pull=Pin.PULL_UP).button.pull, Pin.PULL_UP)
 
 
 class ButtonDrivingACyclerTests(unittest.IsolatedAsyncioTestCase):

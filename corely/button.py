@@ -4,8 +4,10 @@ Buttons are polled from their own task. Polling (rather than a pin IRQ) keeps
 debouncing simple and keeps callbacks out of interrupt context, and at a 10ms
 poll interval the cost is negligible.
 
-Wiring assumption: the button shorts the pin to ground and the pin uses an
-internal pull-up, so a press reads 0.
+Wiring: active-low by default - the button shorts the pin to ground and the
+pin uses an internal pull-up, so a press reads 0. For a button wired to 3V3
+pass active_low=False, which picks a pull-down; for a board or breakout with
+its own pull resistors pass pull=None as well.
 
 When on_press fires depends on what else the button listens for:
 
@@ -24,6 +26,11 @@ press has passed. That is why both default to unset.
 import asyncio
 import time
 from machine import Pin
+
+# Default for Button's pull argument: choose from active_low. Not None,
+# because None is how MicroPython asks for no pull at all, and an int like
+# the Pin.PULL_* constants it stands beside.
+AUTO_PULL = -1
 
 # When on_press fires, by which other gestures are set.
 _ON_DOWN = 'down'				# Nothing to tell apart: straight away
@@ -50,7 +57,8 @@ class Button:
 	def __init__(self, pin_number, on_press=None, on_release=None,
 				 on_long_press=None, on_double_press=None,
 				 long_press_ms=1000, double_press_ms=400, repeat_ms=None,
-				 long_presses=None, debounce_ms=50, poll_ms=10):
+				 long_presses=None, debounce_ms=50, poll_ms=10,
+				 active_low=True, pull=AUTO_PULL):
 		"""
 		Args:
 			pin_number: GPIO pin number for the button
@@ -75,6 +83,11 @@ class Button:
 				long_press_ms.
 			debounce_ms: Debounce time in milliseconds (default 50ms)
 			poll_ms: How often to sample the pin (default 10ms)
+			active_low: True if a press pulls the pin low (button to GND),
+				False if it pulls it high (button to 3V3)
+			pull: Pin.PULL_UP, Pin.PULL_DOWN, or None for no internal pull
+				(external resistors). By default, the one that matches
+				active_low: a pull-up for active-low, a pull-down otherwise.
 
 		Every callback is a plain function that must not block - to kick off
 		async work, call asyncio.create_task inside it. Any may be None.
@@ -98,7 +111,10 @@ class Button:
 				"with a long press or on_double_press"
 			)
 
-		self.button = Pin(pin_number, Pin.IN, Pin.PULL_UP)
+		if pull == AUTO_PULL:
+			pull = Pin.PULL_UP if active_low else Pin.PULL_DOWN
+		self.button = Pin(pin_number, Pin.IN, pull)
+		self._pressed_level = 0 if active_low else 1
 		self.on_press = on_press
 		self.on_release = on_release
 		self.on_double_press = on_double_press
@@ -119,7 +135,7 @@ class Button:
 	@property
 	def is_pressed(self):
 		"""True while the button is held down."""
-		return self.button.value() == 0
+		return self.button.value() == self._pressed_level
 
 	async def wait_for_press(self):
 		"""Wait for a debounced press (falling edge).

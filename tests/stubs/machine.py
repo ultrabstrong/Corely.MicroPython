@@ -5,6 +5,7 @@ class Pin:
 	OUT = 'OUT'
 	IN = 'IN'
 	PULL_UP = 'PULL_UP'
+	PULL_DOWN = 'PULL_DOWN'
 
 	def __init__(self, id, mode=None, pull=None):
 		self.id = id
@@ -12,7 +13,10 @@ class Pin:
 		self.pull = pull
 		# History of every value written, so tests can assert on blink patterns.
 		self.writes = []
-		self._value = 1 if pull == Pin.PULL_UP else 0
+		# An input rests where its pull holds it: high with a pull-up, low
+		# with a pull-down or (in this fake) no pull.
+		self._rest = 1 if pull == Pin.PULL_UP else 0
+		self._value = self._rest
 
 	def value(self, val=None):
 		if val is None:
@@ -22,12 +26,13 @@ class Pin:
 		return None
 
 	def press(self):
-		"""Test helper: simulate the button being held down (active low)."""
-		self._value = 0
+		"""Test helper: simulate the button being held down - the pin leaves
+		its resting level, whichever way it is pulled."""
+		self._value = 1 - self._rest
 
 	def release(self):
 		"""Test helper: simulate the button being released."""
-		self._value = 1
+		self._value = self._rest
 
 
 class PWM:
