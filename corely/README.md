@@ -265,6 +265,53 @@ Button(1, on_press=cycle.keep_awake, on_long_press=cycle.sleep_now)
 trip near the asked-for level, not exactly. The chip holds INT low until
 `clear_interrupt()` - hence `rearm`.
 
+## Threshold alarms
+
+Some sensors watch a threshold themselves and latch an interrupt pin when the
+reading leaves a range - alarm clocks, not doorbells: the signal stays on
+after the cause has gone, until cleared, and latches again if the reading is
+still out of range. `ThresholdAlarm` turns that into one event per crossing:
+
+```python
+dark = ThresholdAlarm(light, pins.LIGHT_INT,
+                      below=lambda now: max(120, now // 4),   # or a number
+                      recover=lambda threshold: threshold * 2, # or a gap
+                      on_event=lambda direction: print(direction))
+cycle.toggle_on("dark", dark)       # a SleepCycle trigger...
+asyncio.create_task(dark.run())     # ...or on its own while awake
+```
+
+It arms the crossing; when that latches it reports an event and arms the
+recovery point; when *that* latches it reports nothing and re-arms the
+crossing. The gap between the two is hysteresis - a threshold's debounce.
+`below` and `above` together make a band. `snapshot()` / `restore=` carry it
+across a reboot.
+
+A sensor joins by implementing the alarm contract, in whatever units its chip
+compares: `alarm_value()`, `arm_alarm(below, above)`, `clear_alarm()`,
+`disarm_alarm()`, `alarm_latched()`. `Tsl2591` does, in raw counts; the
+contract was checked on paper against the MCP9808 temperature alarm.
+
+## Deep sleep
+
+```python
+system.deep_sleep(15000, "/reset.txt", wake=[button_trigger, dark], guard=guard)
+# ...the board reboots; main.py starts again...
+if last_reset("/reset.txt") == system.DEEP_SLEEP:
+    why = system.wake_reason(alarms={'dark': light}, pins={'button': button_trigger})
+```
+
+- **Every wake is a reboot.** RAM is gone - save what must survive first.
+- **`wake_reason()` reads what is still true:** a latched sensor alarm names
+  its wake reliably (`alarm_latched()` reads the chip, which keeps its flag
+  even after being re-opened); a button press is usually released by the
+  time the program runs, and reads as `'timer'`. Call it before anything
+  re-arms the alarms.
+- **Pass the `BootGuard`**: a deep-sleep cycle is a string of short boots,
+  which it would otherwise take for a boot loop.
+- On the RP2, MicroPython's deep sleep is light sleep plus a reboot - real
+  program shape, light sleep's power. On the ESP32 it is real deep sleep.
+
 ## Logs and system health
 
 For a device that runs for months unattended:
@@ -319,6 +366,7 @@ from corely.sensors import Bme280, Tsl2591, Sgp40, SensorSampler, recover_i2c
 from corely.logs import RotatingFileHandler, boot_number, format_exception
 from corely.system import Watchdog, BootGuard, SystemMonitor, last_reset, reset
 from corely.sleep import SleepCycle, PinTrigger
+from corely.alarms import ThresholdAlarm
 ```
 
 Typical shape of a project:
@@ -360,9 +408,11 @@ Every module is a flat file in this folder:
 - `sensors.py` - the `Sensor` base, `Bme280`, `Tsl2591` and `Sgp40`, the
   `SensorSampler` that owns them, and `recover_i2c()`
 - `sleep.py` - `SleepCycle` and `PinTrigger`
+- `alarms.py` - `ThresholdAlarm` and the sensor alarm contract
 - `logs.py` - `RotatingFileHandler`, `boot_number()`, `format_exception()`
 - `system.py` - `Watchdog`, `BootGuard`, `last_reset()`/`reset()`,
-  `log_task_errors()`, `SystemMonitor`, and `memory()`/`storage()`/`firmware()`
+  `log_task_errors()`, `SystemMonitor`, `deep_sleep()`/`wake_reason()`, and
+  `memory()`/`storage()`/`firmware()`
 
 ## Projects using this library
 

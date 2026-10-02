@@ -16,6 +16,15 @@ def reset():
 	resets.append(True)
 
 
+SLEEP = 'SLEEP'
+DEEPSLEEP = 'DEEPSLEEP'
+deep_sleeps = []
+
+
+def deepsleep(ms=None):
+	deep_sleeps.append(ms)
+
+
 class WDT:
 	"""Fake watchdog that counts feeds."""
 

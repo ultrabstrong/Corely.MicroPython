@@ -41,6 +41,11 @@ class FakeI2C:
 		data = self.memory[(addr, register)]
 		buf[:len(data)] = data
 
+	def readfrom_mem(self, addr, register, count):
+		if self.fail:
+			raise OSError("I2C read failed")
+		return bytes(self.memory[(addr, register)][:count])
+
 	def readfrom(self, addr, count):
 		if self.fail:
 			raise OSError("I2C read failed")
@@ -629,6 +634,24 @@ class LightInterruptTests(unittest.TestCase):
 		self.sensor.reopen()
 
 		self.assertEqual(self.registers()[0x00], 0x13)
+
+	def test_alarm_contract_arms_in_raw_counts(self):
+		self.sensor.arm_alarm(below=724)
+
+		r = self.registers()
+		self.assertEqual(r[0x04] | r[0x05] << 8, 724)
+		self.assertEqual(r[0x06] | r[0x07] << 8, 60000)
+
+	def test_alarm_latched_reads_the_status_register(self):
+		self.i2c.memory[(0x29, 0xA0 | 0x13)] = bytes([0x11])
+		self.assertTrue(self.sensor.alarm_latched())
+
+		self.i2c.memory[(0x29, 0xA0 | 0x13)] = bytes([0x01])
+		self.assertFalse(self.sensor.alarm_latched())
+
+	def test_alarm_value_is_the_raw_count(self):
+		self.sensor._chip.raw = (2897, 600)
+		self.assertEqual(self.sensor.alarm_value(), 2897)
 
 	def test_raw_count_thresholds_win_over_lux(self):
 		self.sensor.set_light_interrupt(above_lux=20, above_counts=900)

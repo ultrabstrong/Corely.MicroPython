@@ -94,6 +94,90 @@ class ResetReasonTests(FileTestCase):
 		self.assertEqual(last_reset(marker), system.WATCHDOG)
 
 
+class DeepSleepTests(FileTestCase):
+	def setUp(self):
+		super().setUp()
+		Watchdog.running_timeout_ms = None
+		machine.deep_sleeps.clear()
+
+	def test_leaves_a_marker_then_sleeps(self):
+		marker = self.path("reset.txt")
+
+		system.deep_sleep(15000, marker)
+
+		self.assertEqual(machine.deep_sleeps, [15000])
+		machine.next_reset_cause = machine.WDT_RESET	# How the RP2 reports it
+		self.assertEqual(last_reset(marker), system.DEEP_SLEEP)
+
+	def test_arms_wake_triggers_for_deep_sleep(self):
+		armed = []
+
+		class Trigger:
+			def arm(self, deep=False):
+				armed.append(deep)
+
+		system.deep_sleep(1000, self.path("reset.txt"), wake=[Trigger(), Trigger()])
+
+		self.assertEqual(armed, [True, True])
+
+	def test_marks_the_boot_healthy_so_cycles_are_not_a_boot_loop(self):
+		guard_path = self.path("boots.txt")
+		for _ in range(5):
+			guard = BootGuard(guard_path, limit=3)
+			self.assertFalse(guard.tripped)
+			system.deep_sleep(1000, self.path("reset.txt"), guard=guard)
+
+	def test_refuses_under_a_watchdog(self):
+		Watchdog.running_timeout_ms = 8000
+		try:
+			with self.assertRaises(ValueError):
+				system.deep_sleep(15000, self.path("reset.txt"))
+			self.assertEqual(machine.deep_sleeps, [])
+		finally:
+			Watchdog.running_timeout_ms = None
+
+
+class WakeReasonTests(unittest.TestCase):
+	class Alarm:
+		def __init__(self, latched):
+			self.latched = latched
+
+		def alarm_latched(self):
+			return self.latched
+
+	class Pin:
+		def __init__(self, active):
+			self.active = active
+
+	def test_a_latched_alarm_names_the_wake(self):
+		reason = system.wake_reason(
+			alarms={'light': self.Alarm(True)}, pins={'button': self.Pin(False)})
+		self.assertEqual(reason, 'light')
+
+	def test_alarms_before_pins(self):
+		reason = system.wake_reason(
+			alarms={'light': self.Alarm(True)}, pins={'button': self.Pin(True)})
+		self.assertEqual(reason, 'light')
+
+	def test_a_held_pin_names_the_wake(self):
+		reason = system.wake_reason(
+			alarms={'light': self.Alarm(False)}, pins={'button': self.Pin(True)})
+		self.assertEqual(reason, 'button')
+
+	def test_nothing_still_true_means_the_timer(self):
+		"""A released button leaves no trace - the doorbell problem."""
+		reason = system.wake_reason(
+			alarms={'light': self.Alarm(False)}, pins={'button': self.Pin(False)})
+		self.assertEqual(reason, 'timer')
+
+	def test_an_unreadable_alarm_is_skipped(self):
+		class Broken:
+			def alarm_latched(self):
+				raise OSError("gone")
+
+		self.assertEqual(system.wake_reason(alarms={'light': Broken()}), 'timer')
+
+
 class TaskErrorTests(unittest.TestCase):
 	def test_a_crashed_task_is_logged_with_its_traceback(self):
 		logger = mock.Mock()

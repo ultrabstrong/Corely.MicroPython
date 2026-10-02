@@ -72,14 +72,20 @@ class PinTrigger:
 		cycle checks this too."""
 		return self.pin.value() == (0 if self.falling else 1)
 
-	def arm(self):
+	def arm(self, deep=False):
+		"""Arm the interrupt.
+
+		Args:
+			deep: True when the board is about to deep-sleep rather than
+				light-sleep. Only matters on ports that need telling which
+				sleep a pin may wake (the ESP32); the RP2 wakes on any.
+		"""
 		self.fired = False
 		edge = self._Pin.IRQ_FALLING if self.falling else self._Pin.IRQ_RISING
 		try:
-			# The ESP32 needs to be told a pin may wake it; the RP2 does not
-			# take the argument.
 			import machine
-			self.pin.irq(handler=self._interrupt, trigger=edge, wake=machine.SLEEP)
+			wake = machine.DEEPSLEEP if deep else machine.SLEEP
+			self.pin.irq(handler=self._interrupt, trigger=edge, wake=wake)
 		except (TypeError, AttributeError):
 			self.pin.irq(handler=self._interrupt, trigger=edge)
 

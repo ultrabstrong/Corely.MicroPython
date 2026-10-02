@@ -220,6 +220,8 @@ class Tsl2591(Sensor):
 	_THRESHOLDS = 0x04		# AILTL, AILTH, AIHTL, AIHTH: low then high, LE
 	_NP_THRESHOLDS = 0x08	# The same four for the no-persist interrupt
 	_PERSIST = 0x0C
+	_STATUS = 0x13
+	_ALS_INTERRUPT_FLAG = 0x10	# AINT in the status register
 	# "No upper limit". Not 0xFFFF: on the board a 0xFFFF threshold tripped
 	# the chip's interrupt flags with the reading nowhere near it, while
 	# 60000 behaved. Readings top out at 36863 at 100ms integration anyway.
@@ -262,6 +264,35 @@ class Tsl2591(Sensor):
 	def raw_full_spectrum(self):
 		"""The full-spectrum count right now - what the thresholds compare."""
 		return self._chip.raw_luminosity[0]
+
+	# The alarm contract (see ThresholdAlarm in corely.alarms), in raw
+	# full-spectrum counts - the units the chip itself compares.
+
+	def alarm_value(self):
+		"""The reading the alarm compares, now."""
+		return self.raw_full_spectrum()
+
+	def arm_alarm(self, below=None, above=None):
+		"""Latch INT when the count leaves (below, above). Either may be None."""
+		self.set_light_interrupt(below_counts=below, above_counts=above)
+
+	def clear_alarm(self):
+		"""Release the latch. It latches again if still out of range."""
+		self.clear_interrupt()
+
+	def disarm_alarm(self):
+		self.disable_interrupt()
+
+	def alarm_latched(self):
+		"""True if the alarm has latched and not been cleared.
+
+		Read from the chip's status register, not the INT pin: re-opening the
+		sensor (as a reboot does) switches the interrupt output off and frees
+		the pin, but the status bit stays set - checked on the board - so a
+		program starting after a deep sleep can still tell the alarm fired.
+		"""
+		status = self.i2c.readfrom_mem(self.ADDRESS, self._COMMAND | self._STATUS, 1)[0]
+		return bool(status & self._ALS_INTERRUPT_FLAG)
 
 	def set_light_interrupt(self, below_lux=None, above_lux=None, persist=3,
 							below_counts=None, above_counts=None):

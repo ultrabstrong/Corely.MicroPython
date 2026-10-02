@@ -113,6 +113,12 @@ class BootGuard:
 	async def run(self):
 		"""Wait out stable_ms, then clear the count. Start with create_task()."""
 		await asyncio.sleep_ms(self.stable_ms)
+		self.mark_stable()
+
+	def mark_stable(self):
+		"""Count this boot as healthy now - for a boot that ends early on
+		purpose. A deep-sleep cycle reboots every few seconds; without this
+		the guard reads it as a boot loop and drops into safe mode."""
 		_write(self.path, "0")
 		self.stable = True
 
@@ -160,6 +166,73 @@ def reset(reason, marker_path):
 	"""
 	_write(marker_path, reason)
 	machine.reset()
+
+
+def deep_sleep(ms, marker_path, wake=(), guard=None):
+	"""Deep-sleep: the board wakes through a reset and main.py starts again.
+
+	Everything in RAM is gone afterwards, so save what must survive first.
+	The marker lets last_reset() report DEEP_SLEEP on the next boot - the RP2
+	reports a deep-sleep wake as a watchdog reset otherwise.
+
+	On the RP2 MicroPython implements this as light sleep followed by a
+	reboot: the program shape of deep sleep, but light sleep's power. On the
+	ESP32 it is real deep sleep. Waking on pins there is armed through the
+	same triggers, but has not been tried on one yet.
+
+	Args:
+		ms: How long before the timer wakes it
+		marker_path: Where to note that this was a deep sleep
+		wake: Triggers to arm as wake sources - PinTrigger, ThresholdAlarm,
+			anything with arm(deep=True)
+		guard: The BootGuard, if one is running. A deep-sleep cycle is a
+			string of short boots, which the guard would otherwise read as a
+			boot loop; this boot is marked healthy before sleeping.
+
+	Raises:
+		ValueError: Under a running watchdog, which would reset it mid-sleep
+	"""
+	if Watchdog.running_timeout_ms is not None:
+		raise ValueError("the watchdog would reset the board during a deep sleep")
+	if guard:
+		guard.mark_stable()
+	for trigger in wake:
+		trigger.arm(deep=True)
+	_write(marker_path, DEEP_SLEEP)
+	machine.deepsleep(ms)
+
+
+def wake_reason(alarms=None, pins=None):
+	"""Why the board woke from a deep sleep, worked out after the reboot.
+
+	The wake itself is gone with the reset, so this looks for what is still
+	true: a sensor alarm still latched names its wake reliably - it stays set
+	until cleared - while a pin still at its triggered level means a button
+	still held. A quick button press is usually released before the program
+	runs, so it reads as 'timer'; that is the doorbell problem, and why a
+	latching sensor alarm makes a dependable wake source and a button does
+	not.
+
+	Call it before anything re-arms the alarms (creating a ThresholdAlarm
+	clears its sensor's latch).
+
+	Args:
+		alarms: {name: sensor implementing alarm_latched()}
+		pins: {name: trigger with an `active` property}
+
+	Returns:
+		The first name still latched or held, else 'timer'
+	"""
+	for name, sensor in (alarms or {}).items():
+		try:
+			if sensor.alarm_latched():
+				return name
+		except OSError:
+			pass
+	for name, trigger in (pins or {}).items():
+		if trigger.active:
+			return name
+	return 'timer'
 
 
 def log_task_errors(logger):
