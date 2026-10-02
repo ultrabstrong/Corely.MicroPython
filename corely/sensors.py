@@ -211,6 +211,29 @@ class Tsl2591(Sensor):
 	# "as bright as it measures" - a torch, or direct sun.
 	MAX_LUX = 6000
 
+	ADDRESS = 0x29
+
+	# Registers and commands, from Adafruit's Arduino TSL2591 library
+	# (registerInterrupt / clearInterrupt), which implements the datasheet.
+	_COMMAND = 0xA0
+	_ENABLE = 0x00
+	_THRESHOLDS = 0x04		# AILTL, AILTH, AIHTL, AIHTH: low then high, LE
+	_NP_THRESHOLDS = 0x08	# The same four for the no-persist interrupt
+	_PERSIST = 0x0C
+	# "No upper limit". Not 0xFFFF: on the board a 0xFFFF threshold tripped
+	# the chip's interrupt flags with the reading nowhere near it, while
+	# 60000 behaved. Readings top out at 36863 at 100ms integration anyway.
+	_NO_LIMIT = 60000
+	_CLEAR_INTERRUPT = 0xE7	# Special function: clear both ALS interrupts
+	_POWER_ONLY = 0x01		# PON - powered, not measuring
+	_POWER_AND_ALS = 0x03	# PON | AEN - measuring, interrupts off
+	_ALS_INTERRUPT = 0x10	# AIEN - the persist-filtered interrupt only
+
+	# Gain register value -> multiplier, and the lux maths' DF, for turning
+	# a lux threshold into the raw counts the chip compares against.
+	_GAINS = {0x00: 1, 0x10: 25, 0x20: 428, 0x30: 9876}
+	_LUX_DF = 408.0
+
 	def __init__(self, i2c, debug=False):
 		"""
 		Args:
@@ -223,11 +246,96 @@ class Tsl2591(Sensor):
 		"""
 		super().__init__(debug)
 		self.i2c = i2c
+		self._interrupt = None
 		self.open()
 
 	def open(self):
 		from tsl2591 import TSL2591
 		self._chip = TSL2591(self.i2c)
+		# The driver switches on both ALS interrupts but sets no thresholds
+		# for the no-persist one, which leaves INT held low forever. Start
+		# with interrupts off; re-arm one a reopen would otherwise lose.
+		self._write(self._ENABLE, self._POWER_AND_ALS)
+		if self._interrupt:
+			self.set_light_interrupt(*self._interrupt)
+
+	def raw_full_spectrum(self):
+		"""The full-spectrum count right now - what the thresholds compare."""
+		return self._chip.raw_luminosity[0]
+
+	def set_light_interrupt(self, below_lux=None, above_lux=None, persist=3,
+							below_counts=None, above_counts=None):
+		"""Pull INT low when the light leaves a range - a hardware wake source.
+
+		The chip holds INT low until clear_interrupt(), so it is a level a
+		pin interrupt can catch even mid-sleep.
+
+		Thresholds are compared against the raw full-spectrum count, not
+		lux, so they are converted with the lux maths' constants ignoring
+		infrared. Approximate: "below 5 lux" trips near 5, not exactly - and
+		under infrared-heavy light (a hand over the sensor lets a lot
+		through) the count runs well above what the lux reading suggests.
+		Pass below_counts / above_counts to set a threshold in the chip's own
+		terms instead, e.g. relative to raw_full_spectrum().
+
+		Args:
+			below_lux: Fire when the light falls below this, or None
+			above_lux: Fire when the light rises above this, or None
+			persist: The chip's persistence filter - readings in a row outside
+				the range before it fires. 3 (300ms at the default timing) lets
+				a passing shadow through. The chip's codes: 1-3 are 1-3
+				readings, then 4=5, 5=10, ... up to 15=60.
+			below_counts: As below_lux, in raw counts; wins over below_lux
+			above_counts: As above_lux, in raw counts; wins over above_lux
+		"""
+		low = 0
+		if below_counts is not None:
+			low = below_counts
+		elif below_lux is not None:
+			low = self.lux_to_counts(below_lux)
+		high = self._NO_LIMIT
+		if above_counts is not None:
+			high = above_counts
+		elif above_lux is not None:
+			high = self.lux_to_counts(above_lux)
+		low = max(0, min(self._NO_LIMIT, int(low)))
+		high = max(0, min(self._NO_LIMIT, int(high)))
+		self._interrupt = (below_lux, above_lux, persist, below_counts, above_counts)
+
+		# Measuring stops while the thresholds change. On the board, changing
+		# them mid-measurement left the chip comparing against the old range
+		# for the next cycle - it fired straight after arming - so the
+		# measurement restarts from scratch on the new one. The no-persist
+		# interrupt stays disabled, but gets the same range so the chip's
+		# status flags tell the truth.
+		self._write(self._ENABLE, self._POWER_ONLY)
+		limits = (low & 0xFF, low >> 8, high & 0xFF, high >> 8)
+		for base in (self._THRESHOLDS, self._NP_THRESHOLDS):
+			for offset, byte in enumerate(limits):
+				self._write(base + offset, byte)
+		self._write(self._PERSIST, persist)
+		self.clear_interrupt()
+		self._write(self._ENABLE, self._POWER_AND_ALS | self._ALS_INTERRUPT)
+
+	def clear_interrupt(self):
+		"""Release INT. If the light is still out of range it fires again."""
+		self.i2c.writeto(self.ADDRESS, bytes([self._CLEAR_INTERRUPT]))
+
+	def disable_interrupt(self):
+		"""Stop the light interrupt, leaving INT high."""
+		self._interrupt = None
+		self._write(self._ENABLE, self._POWER_AND_ALS)
+		self.clear_interrupt()
+
+	def lux_to_counts(self, lux):
+		"""Roughly the raw full-spectrum count this much light gives."""
+		gain = self._GAINS.get(getattr(self._chip, "_gain", 0x10), 25)
+		atime = 100 * (getattr(self._chip, "_integration", 0) + 1)
+		counts_per_lux = atime * gain / self._LUX_DF
+		return max(0, min(self._NO_LIMIT, int(lux * counts_per_lux)))
+
+	def _write(self, register, value):
+		self.i2c.writeto(self.ADDRESS, bytes([self._COMMAND | register, value]))
 
 	async def read(self):
 		full, ir = self._chip.raw_luminosity

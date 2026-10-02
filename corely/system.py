@@ -54,6 +54,11 @@ class Watchdog:
 	production builds; see the app's safe mode for getting back in.
 	"""
 
+	# The timeout of the watchdog started this boot, or None. There is only
+	# one hardware watchdog, and once started it runs until reset, so this is
+	# what anything planning a long pause (a SleepCycle) checks.
+	running_timeout_ms = None
+
 	def __init__(self, timeout_ms=8000, feed_ms=None):
 		"""
 		Args:
@@ -64,6 +69,7 @@ class Watchdog:
 		self.timeout_ms = timeout_ms
 		self.feed_ms = feed_ms or timeout_ms // 4
 		self._wdt = machine.WDT(timeout=timeout_ms)
+		Watchdog.running_timeout_ms = timeout_ms
 
 	async def run(self):
 		"""Feed forever. Start this with asyncio.create_task()."""

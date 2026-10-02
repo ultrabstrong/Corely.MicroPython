@@ -31,6 +31,17 @@ class Pin:
 	OUT = 'OUT'
 	IN = 'IN'
 	OPEN_DRAIN = 'OPEN_DRAIN'
+	IRQ_FALLING = 'IRQ_FALLING'
+	IRQ_RISING = 'IRQ_RISING'
+
+	def irq(self, handler=None, trigger=None):
+		"""Records the handler; tests call fire_irq() to invoke it."""
+		self.irq_handler = handler
+		self.irq_trigger = trigger
+
+	def fire_irq(self):
+		if getattr(self, 'irq_handler', None):
+			self.irq_handler(self)
 	PULL_UP = 'PULL_UP'
 	PULL_DOWN = 'PULL_DOWN'
 

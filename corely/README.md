@@ -226,6 +226,45 @@ Each class imports its driver when created, so `corely.sensors` costs nothing
 for boards a project does not use. The drivers - `bme280`, `tsl2591`, `sgp40`
 and `voc_algorithm` - are vendored; see `vendor/README.md`.
 
+## Sleep cycles
+
+`SleepCycle` runs awake, then asleep until the timer or a trigger, round and
+round. It is an Action: `on()` starts it, `off()` stops it with everything it
+drives switched off.
+
+```python
+cycle = SleepCycle(awake_ms=5000, asleep_ms=15000,
+                   awake_action=ActionGroup(screen_on, green_led),
+                   on_wake=lambda reason: print(reason))   # 'timer', 'button', 'dark'
+cycle.wake_on("button", PinTrigger(1))
+cycle.wake_on("dark", PinTrigger(2, rearm=light.clear_interrupt))
+light.set_light_interrupt(below_lux=5)
+cycle.on()
+
+Button(1, on_press=cycle.keep_awake, on_long_press=cycle.sleep_now)
+```
+
+- **Waking is hardware only.** A sleeping CPU cannot check anything, so every
+  trigger is a pin interrupt - a button, or a chip's INT line such as the
+  TSL2591's light threshold (`Tsl2591.set_light_interrupt`). There are no
+  polled triggers: waking to look would spend what sleeping saves.
+- **Going to sleep is ordinary code.** `sleep_now()` is a plain callable for a
+  button or state machine; `keep_awake()` restarts the awake timer, which
+  makes an idle timeout out of activity.
+- **False wakes are slept through.** `lightsleep` returns early when, for
+  instance, the wireless chip settles after a radio switches off; only a
+  fired trigger or the timer ends a sleep. A trigger already asserted when the
+  cycle goes to sleep (a latched INT, a held button) wakes it at once.
+- **The sleep call is `sleep_fn`**, `machine.lightsleep` by default - the
+  board-specific part. Light sleep keeps the program; a deep sleep that
+  restarts it (the ESP32's) needs a different design.
+- **It refuses to start under a watchdog** whose timeout a sleep would
+  outlast, rather than be reset mid-sleep.
+
+`set_light_interrupt()` thresholds are raw counts converted from lux, so they
+trip near the asked-for level, not exactly. The chip holds INT low until
+`clear_interrupt()` - hence `rearm`.
+
 ## Logs and system health
 
 For a device that runs for months unattended:
@@ -279,6 +318,7 @@ from corely.ble_central import BleUartCentral
 from corely.sensors import Bme280, Tsl2591, Sgp40, SensorSampler, recover_i2c
 from corely.logs import RotatingFileHandler, boot_number, format_exception
 from corely.system import Watchdog, BootGuard, SystemMonitor, last_reset, reset
+from corely.sleep import SleepCycle, PinTrigger
 ```
 
 Typical shape of a project:
@@ -319,6 +359,7 @@ Every module is a flat file in this folder:
 - `ble_central.py` - `BleUartCentral` (this device connects to a peripheral)
 - `sensors.py` - the `Sensor` base, `Bme280`, `Tsl2591` and `Sgp40`, the
   `SensorSampler` that owns them, and `recover_i2c()`
+- `sleep.py` - `SleepCycle` and `PinTrigger`
 - `logs.py` - `RotatingFileHandler`, `boot_number()`, `format_exception()`
 - `system.py` - `Watchdog`, `BootGuard`, `last_reset()`/`reset()`,
   `log_task_errors()`, `SystemMonitor`, and `memory()`/`storage()`/`firmware()`

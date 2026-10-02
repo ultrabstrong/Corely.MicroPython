@@ -5,6 +5,8 @@ class TSL2591:
 	def __init__(self, i2c, address=0x29):
 		self.i2c = i2c
 		self.enabled = True
+		self._gain = 0x10			# The real driver's defaults: 25x gain,
+		self._integration = 0x00	# 100ms integration
 		self.raw = (588, 133)
 		self.lux_value = 60.3
 		self.overflow = False

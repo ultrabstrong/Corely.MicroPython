@@ -23,6 +23,12 @@ class FakeI2C:
 		self.memory = {}
 		self.reads = []
 		self.fail = False
+		self.sent = []		# Plain writeto() calls, as (addr, bytes)
+
+	def writeto(self, addr, buf):
+		if self.fail:
+			raise OSError("I2C write failed")
+		self.sent.append((addr, bytes(buf)))
 
 	def writeto_mem(self, addr, register, buf, addrsize=8):
 		if self.fail:
@@ -565,6 +571,78 @@ class RecoverI2CTests(unittest.TestCase):
 		self.assertEqual(bus['stops'], 1)
 		self.assertEqual(bus[6], 1)		# SDA released
 		self.assertEqual(bus[7], 1)		# SCL high
+
+
+class LightInterruptTests(unittest.TestCase):
+	"""The TSL2591's INT pin as a wake source."""
+
+	def setUp(self):
+		self.i2c = FakeI2C()
+		self.sensor = Tsl2591(self.i2c)
+
+	def registers(self):
+		"""Each register's last written value, from command-bit writes."""
+		values = {}
+		for _, data in self.i2c.sent:
+			if len(data) == 2:
+				values[data[0] & 0x1F] = data[1]
+		return values
+
+	def test_open_leaves_interrupts_off(self):
+		"""The driver alone leaves INT stuck low; Corely switches it off."""
+		self.assertEqual(self.i2c.sent[-1], (0x29, bytes([0xA0, 0x03])))
+
+	def test_below_threshold_in_raw_counts(self):
+		self.sensor.set_light_interrupt(below_lux=5)
+
+		r = self.registers()
+		# 25x gain, 100ms: 100 * 25 / 408 counts per lux, so 5 lux is 30.
+		self.assertEqual(r[0x04] | r[0x05] << 8, 30)
+		self.assertEqual(r[0x06] | r[0x07] << 8, 60000)
+		self.assertEqual(r[0x0C], 3)
+		self.assertEqual(r[0x00], 0x13)		# Measuring, persist-filtered interrupt on
+
+	def test_above_threshold(self):
+		self.sensor.set_light_interrupt(above_lux=100)
+
+		r = self.registers()
+		self.assertEqual(r[0x04] | r[0x05] << 8, 0)
+		self.assertEqual(r[0x06] | r[0x07] << 8, 612)
+
+	def test_arming_clears_a_stale_interrupt(self):
+		self.sensor.set_light_interrupt(below_lux=5)
+
+		self.assertIn((0x29, bytes([0xE7])), self.i2c.sent)
+
+	def test_clear_and_disable(self):
+		self.sensor.set_light_interrupt(below_lux=5)
+		self.i2c.sent.clear()
+
+		self.sensor.disable_interrupt()
+
+		self.assertEqual(self.i2c.sent, [(0x29, bytes([0xA0, 0x03])), (0x29, bytes([0xE7]))])
+
+	def test_reopen_rearms_the_interrupt(self):
+		self.sensor.set_light_interrupt(below_lux=5)
+		self.i2c.sent.clear()
+
+		self.sensor.reopen()
+
+		self.assertEqual(self.registers()[0x00], 0x13)
+
+	def test_raw_count_thresholds_win_over_lux(self):
+		self.sensor.set_light_interrupt(above_lux=20, above_counts=900)
+
+		r = self.registers()
+		self.assertEqual(r[0x06] | r[0x07] << 8, 900)
+
+	def test_raw_full_spectrum_reads_channel_0(self):
+		self.sensor._chip.raw = (588, 133)
+		self.assertEqual(self.sensor.raw_full_spectrum(), 588)
+
+	def test_thresholds_are_clamped(self):
+		self.assertEqual(self.sensor.lux_to_counts(1_000_000), 60000)
+		self.assertEqual(self.sensor.lux_to_counts(-3), 0)
 
 
 class VocStateTests(unittest.TestCase):

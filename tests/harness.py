@@ -51,6 +51,7 @@ if not hasattr(time, 'ticks_ms'):
 	time.ticks_diff = _ticks_diff
 	time.ticks_add = _ticks_add
 	time.sleep_us = lambda us: time.sleep(us / 1_000_000)
+	time.sleep_ms = lambda ms: time.sleep(ms / 1000)
 
 # MicroPython's gc reports heap use; CPython's does not. Fixed numbers are
 # enough for the code that reads them.
