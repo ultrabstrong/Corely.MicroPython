@@ -115,6 +115,40 @@ own gains if your LED differs.
 anything below full switches the pin to PWM on demand - so a pin without PWM
 (the Pico W's onboard LED lives on the wireless chip) can only run at full.
 
+## Buttons
+
+`Button` calls a plain function per gesture - no subclassing, no Action
+required:
+
+```python
+Button(1, on_press=modes.move_next)                   # fires on the way down
+Button(1, on_press=next_mode,
+       on_long_press=reset,                            # once, while still held
+       on_double_press=go_back,                        # second press in 400ms
+       on_release=show_released)                       # every time it comes up
+Button(1, on_press=volume_up, repeat_ms=150)           # key-repeat while held
+Button(1, long_presses={1000: settings,                # several hold lengths,
+                        10000: factory_reset})         # each as it is reached
+```
+
+`long_presses` fires each callback once, while still held, as its length is
+reached - a 6s hold with `{1000: a, 5000: b}` calls `a` at 1s and `b` at 5s,
+which is how boards give "hold for settings, keep holding to reset" feedback.
+`on_long_press` joins it at `long_press_ms`.
+
+Telling gestures apart costs latency, so it is only paid for when asked:
+
+| Also set | `on_press` fires |
+|----------|------------------|
+| nothing (or only `on_release`) | the moment the button goes down |
+| `repeat_ms` | on the way down, then every `repeat_ms` while held |
+| `on_long_press` or `long_presses` | on release, if it was not a long press |
+| `on_double_press` | `double_press_ms` after release, if no second press came |
+
+A long press never also counts as a press, and neither half of a double press
+does. `repeat_ms` cannot be combined with either, since both hold `on_press`
+back. `button.is_pressed` reads the pin directly.
+
 ## Sensors
 
 Sensors are read, not switched, so they are not Actions. They follow Corely's
@@ -203,7 +237,8 @@ Every module is a flat file in this folder:
 - `rgb_led.py` - `RgbLed` and the colour palette: any colour over PWM, plus
   blink and rainbow modes
 - `message.py` - `PrintMessage`
-- `button.py` - `Button`, polled and debounced, calling any function on press
+- `button.py` - `Button`, polled and debounced, calling a function per
+  gesture: press, release, long press, double press, key-repeat
 - `wifi.py` - connection, connect/disconnect actions, `WiFiMonitor`
 - `ble_uart.py` - Nordic UART Service UUIDs
 - `ble_peripheral.py` - `BleUartPeripheral` (something connects to this device)
