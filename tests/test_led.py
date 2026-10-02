@@ -232,7 +232,9 @@ class PulseTests(unittest.IsolatedAsyncioTestCase):
 	def tearDown(self):
 		Led.PULSE_STEPS = self._steps
 
-	async def pulse_duties(self, led, cycles=1.5):
+	async def pulse_duties(self, led, cycles=3):
+		# Three cycles, not one: under a loaded test run the PC timer can
+		# stretch each 12ms step several times over.
 		led.on()
 		await asyncio.sleep_ms(int(PULSE_MS * cycles))
 		duties = list(led._pwm.duties)

@@ -6,10 +6,12 @@ what each wrapper asks of its driver and what it hands back - not the chips.
 
 import asyncio
 import unittest
+from unittest import mock
 
 import harness  # noqa: F401
 
-from corely.sensors import Bme280, Sensor, SensorSampler, Sgp40, Tsl2591
+import machine
+from corely.sensors import Bme280, Sensor, SensorSampler, Sgp40, Tsl2591, recover_i2c
 from sgp40 import crc8
 
 
@@ -336,6 +338,246 @@ class SensorSamplerTests(unittest.IsolatedAsyncioTestCase):
 
 		self.assertEqual(readings, {'x': 1})
 		self.assertGreaterEqual(self.a.reads, 3)
+
+
+class ValidationTests(unittest.IsolatedAsyncioTestCase):
+	"""Readings the chip should never produce count as failed reads."""
+
+	async def test_bme280_reading_on_a_driver_clamp_is_rejected(self):
+		i2c = FakeI2C()
+		sensor = Bme280(i2c)
+		# The stub divides raw temperature by 10000: 850000 is exactly 85C.
+		i2c.memory[(0x76, 0xF7)] = bme280_data(850000, 836300, 30600)
+
+		self.assertEqual(await sensor.update(), {})
+		self.assertIn("clamp", str(sensor.error))
+
+	async def test_bme280_ordinary_reading_passes(self):
+		i2c = FakeI2C()
+		sensor = Bme280(i2c)
+		i2c.memory[(0x76, 0xF7)] = bme280_data(244000, 836300, 30600)
+
+		self.assertIn('temperature', await sensor.update())
+
+	async def test_tsl2591_infrared_above_full_spectrum_is_rejected(self):
+		sensor = Tsl2591(FakeI2C())
+		sensor._chip.raw = (100, 200)
+
+		self.assertEqual(await sensor.update(), {})
+
+	async def test_sgp40_saturated_raw_is_rejected_before_the_algorithm(self):
+		i2c = FakeI2C()
+		sensor = Sgp40(i2c)
+		sensor.MEASURE_MS = 0
+		i2c.reads.append(sgp40_reply(0xFFFF))
+
+		self.assertEqual(await sensor.update(), {})
+		self.assertEqual(sensor._voc.processed, [])
+
+	async def test_a_stuck_sensor_is_a_failure(self):
+		sensor = FixedSensor("a", {'x': 1})
+		sensor.stuck_after = 3
+
+		results = [await sensor.update() for _ in range(5)]
+
+		self.assertEqual(results[:3], [{'x': 1}] * 3)
+		self.assertEqual(results[3:], [{}, {}])
+		self.assertIn("same reading", str(sensor.error))
+
+	async def test_a_changing_reading_is_never_stuck(self):
+		sensor = FixedSensor("a", {'x': 0})
+		sensor.stuck_after = 3
+
+		for i in range(10):
+			sensor.readings = {'x': i}
+			self.assertEqual(await sensor.update(), {'x': i})
+
+	async def test_light_sensor_has_no_stuck_check(self):
+		"""A dark room reads 0 for hours, legitimately."""
+		sensor = Tsl2591(FakeI2C())
+		sensor._chip.raw = (0, 0)
+		sensor._chip.lux_value = 0.0
+
+		for _ in range(100):
+			self.assertEqual((await sensor.update())['lux'], 0.0)
+
+	async def test_failure_counts(self):
+		sensor = FixedSensor("a", {'x': 1})
+		sensor.fail = True
+		for _ in range(3):
+			await sensor.update()
+		sensor.fail = False
+		await sensor.update()
+
+		self.assertEqual(sensor.failures, 3)
+		self.assertEqual(sensor.consecutive_failures, 0)
+
+
+class RecoveryTests(unittest.IsolatedAsyncioTestCase):
+	"""The sampler re-opens failing sensors, and recovers the bus if all fail."""
+
+	def make(self, *sensors, **kwargs):
+		recoveries = []
+		sampler = SensorSampler(
+			sensors, reopen_after=3, recover_bus=lambda: recoveries.append(True), **kwargs,
+		)
+		return sampler, recoveries
+
+	async def test_reopens_a_sensor_after_three_failures(self):
+		a, b = FixedSensor("a", {'x': 1}), FixedSensor("b", {'y': 2})
+		sampler, recoveries = self.make(a, b)
+		a.fail = True
+
+		for _ in range(3):
+			await sampler.sample()
+
+		self.assertEqual(a.reopens, 1)
+		self.assertEqual(b.reopens, 0)
+		self.assertEqual(recoveries, [])
+
+	async def test_keeps_reopening_at_each_multiple(self):
+		a, b = FixedSensor("a", {'x': 1}), FixedSensor("b", {'y': 2})
+		sampler, _ = self.make(a, b)
+		a.fail = True
+
+		for _ in range(7):
+			await sampler.sample()
+
+		self.assertEqual(a.reopens, 2)
+
+	async def test_recovers_the_bus_when_every_sensor_fails(self):
+		a, b = FixedSensor("a", {'x': 1}), FixedSensor("b", {'y': 2})
+		sampler, recoveries = self.make(a, b)
+		a.fail = b.fail = True
+
+		for _ in range(3):
+			await sampler.sample()
+
+		self.assertEqual(recoveries, [True])
+		self.assertEqual(sampler.bus_recoveries, 1)
+		self.assertEqual((a.reopens, b.reopens), (1, 1))
+
+	async def test_without_a_bus_recovery_still_reopens(self):
+		a = FixedSensor("a", {'x': 1})
+		sampler = SensorSampler([a], reopen_after=3)
+		a.fail = True
+
+		for _ in range(3):
+			await sampler.sample()
+
+		self.assertEqual(a.reopens, 1)
+
+	async def test_a_sensor_that_cannot_reopen_does_not_stop_sampling(self):
+		class Gone(FixedSensor):
+			def open(self):
+				raise OSError("no device")
+
+		gone, ok = Gone("gone", {}), FixedSensor("ok", {'y': 2})
+		sampler, _ = self.make(gone, ok)
+		gone.fail = True
+
+		for _ in range(4):
+			readings = await sampler.sample()
+
+		self.assertEqual(readings, {'y': 2})
+		self.assertEqual(gone.reopens, 0)
+
+	async def test_a_failed_bus_recovery_is_survived(self):
+		a = FixedSensor("a", {'x': 1})
+
+		def broken():
+			raise OSError("pins busy")
+
+		sampler = SensorSampler([a], reopen_after=3, recover_bus=broken)
+		a.fail = True
+		for _ in range(3):
+			await sampler.sample()
+
+		self.assertEqual(sampler.bus_recoveries, 0)
+		self.assertEqual(a.reopens, 1)
+
+	async def test_sgp40_reopen_keeps_the_learned_baseline(self):
+		i2c = FakeI2C()
+		sensor = Sgp40(i2c)
+		sensor.MEASURE_MS = 0
+		algorithm = sensor._voc
+
+		sensor.reopen()
+
+		self.assertIs(sensor._voc, algorithm)
+
+
+class FakeBusPin:
+	"""Pins on one shared fake bus: SDA stays held low by a stuck slave until
+	SCL has been clocked `release_after` times."""
+
+	OPEN_DRAIN = 'OPEN_DRAIN'
+	IN = 'IN'
+	PULL_UP = 'PULL_UP'
+	bus = {}
+
+	def __init__(self, id, mode=None, pull=None):
+		self.id = id
+
+	def value(self, v=None):
+		bus = FakeBusPin.bus
+		if v is None:
+			if self.id == bus['sda_pin'] and bus['scl_clocks'] < bus['release_after']:
+				return 0
+			return bus.get(self.id, 1)
+		if self.id == bus['scl_pin'] and v == 1 and bus.get(self.id) == 0:
+			bus['scl_clocks'] += 1
+		if self.id == bus['sda_pin'] and bus.get('scl', 1) == 1 and bus.get(self.id) == 0 and v == 1:
+			bus['stops'] += 1
+		bus[self.id] = v
+		if self.id == bus['scl_pin']:
+			bus['scl'] = v
+
+
+class RecoverI2CTests(unittest.TestCase):
+	def run_recovery(self, release_after):
+		FakeBusPin.bus = {
+			'scl_pin': 7, 'sda_pin': 6, 'scl_clocks': 0, 'stops': 0,
+			'release_after': release_after,
+		}
+		with mock.patch.object(machine, 'Pin', FakeBusPin):
+			pulses = recover_i2c(scl_pin=7, sda_pin=6, half_period_us=0)
+		return pulses, FakeBusPin.bus
+
+	def test_clocks_until_sda_is_released(self):
+		pulses, bus = self.run_recovery(release_after=4)
+
+		self.assertEqual(pulses, 4)
+
+	def test_gives_up_after_nine_pulses(self):
+		pulses, _ = self.run_recovery(release_after=100)
+
+		self.assertEqual(pulses, 9)
+
+	def test_a_free_bus_needs_no_pulses(self):
+		pulses, _ = self.run_recovery(release_after=0)
+
+		self.assertEqual(pulses, 0)
+
+	def test_ends_with_a_stop(self):
+		_, bus = self.run_recovery(release_after=2)
+
+		self.assertEqual(bus['stops'], 1)
+		self.assertEqual(bus[6], 1)		# SDA released
+		self.assertEqual(bus[7], 1)		# SCL high
+
+
+class VocStateTests(unittest.TestCase):
+	def test_state_round_trips(self):
+		source = Sgp40(FakeI2C())
+		source._voc.states = (4321, 765)
+		target = Sgp40(FakeI2C())
+
+		target.set_state(source.get_state())
+
+		self.assertEqual(target.get_state(), (4321, 765))
+		self.assertEqual(target._voc.uptime_gamma, 3 * 3600 * 65536)
+		self.assertEqual(target._voc.params.msraw, 4321)
 
 
 if __name__ == '__main__':

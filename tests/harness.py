@@ -50,6 +50,14 @@ if not hasattr(time, 'ticks_ms'):
 	time.ticks_ms = _ticks_ms
 	time.ticks_diff = _ticks_diff
 	time.ticks_add = _ticks_add
+	time.sleep_us = lambda us: time.sleep(us / 1_000_000)
+
+# MicroPython's gc reports heap use; CPython's does not. Fixed numbers are
+# enough for the code that reads them.
+import gc  # noqa: E402
+if not hasattr(gc, 'mem_free'):
+	gc.mem_free = lambda: 400000
+	gc.mem_alloc = lambda: 50000
 
 # MicroPython's asyncio has millisecond variants; CPython's does not.
 if not hasattr(asyncio, 'sleep_ms'):

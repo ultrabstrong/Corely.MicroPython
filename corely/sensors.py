@@ -28,54 +28,117 @@ driver when created, so a project using one sensor never loads the others.
 
 Opening sensors is the application's job: a constructor raises if its chip is
 absent, and the app decides whether to carry on without it.
+
+Staying up unattended:
+
+- Each sensor rejects readings its chip should never produce (validate()),
+  and some spot a reading that has stopped changing - both count as failed
+  reads.
+- After `reopen_after` failures in a row the sampler re-opens that sensor;
+  when every sensor is failing it recovers the I2C bus first (recover_i2c,
+  given to it by the app).
+- Failures are logged through `logging` once per incident - when a streak
+  starts and when it ends - never every second.
 """
 
 import asyncio
+import logging
 import time
+
+_log = logging.getLogger("corely.sensors")
+
+
+class SensorError(Exception):
+	"""A reading the chip should never produce. Counts as a failed read."""
 
 
 class Sensor:
 	"""Something read on demand, returning a dict of named readings.
 
-	Subclasses implement read() and let I/O errors propagate; update() catches
-	them, so one loose wire empties one sensor's readings rather than stopping
-	whoever is sampling.
+	Subclasses implement open() and read(), and may implement validate().
+	They let I/O errors propagate; update() catches them, so one loose wire
+	empties one sensor's readings rather than stopping whoever is sampling.
 	"""
 
 	name = "sensor"
-	errors = (OSError, RuntimeError)	# What counts as a failed read
+	errors = (OSError, RuntimeError, SensorError)	# What counts as a failed read
+	stuck_after = None	# Identical reads in a row that mean "stopped updating"
 
 	def __init__(self, debug=False):
 		"""
 		Args:
-			debug: If True, prints failed reads
+			debug: If True, prints failed reads as well as logging them
 		"""
 		self.debug = debug
 		self.latest = {}
 		self.error = None
+		self.failures = 0				# Ever
+		self.consecutive_failures = 0	# In the current streak
+		self.reopens = 0
+		self._last = None
+		self._repeats = 0
+
+	def open(self):
+		"""Override: create the driver. Called once by the constructor, and
+		again by reopen()."""
 
 	async def read(self):
 		"""Override: return a dict of named readings. May raise."""
 		raise NotImplementedError("Subclasses must implement read()")
 
+	def validate(self, readings):
+		"""Override: raise SensorError for a reading the chip should never
+		produce. The default accepts everything."""
+
+	def reopen(self):
+		"""Rebuild the driver - for a chip that browned out and lost its
+		configuration, or a bus that was just recovered."""
+		self.open()
+		self.reopens += 1
+		self._last = None
+		self._repeats = 0
+
 	async def update(self):
 		"""Read into self.latest.
 
 		A failed read empties latest - so a display shows nothing rather than a
-		stale number - and keeps the exception in self.error.
+		stale number - keeps the exception in self.error, and counts towards
+		the sampler re-opening this sensor.
 
 		Returns:
 			The new readings, {} on failure
 		"""
 		try:
-			self.latest = await self.read()
-			self.error = None
+			readings = await self.read()
+			if readings:
+				self.validate(readings)
+				self._check_stuck(readings)
 		except self.errors as e:
 			self.latest = {}
 			self.error = e
+			self.failures += 1
+			self.consecutive_failures += 1
+			reason = str(e) or type(e).__name__	# Some driver errors carry no message
+			if self.consecutive_failures == 1:
+				_log.warning("%s read failed: %s", self.name, reason)
 			if self.debug:
-				print(f"{self.name}: read failed: {e}")
-		return self.latest
+				print(f"{self.name}: read failed: {reason}")
+			return self.latest
+
+		if self.consecutive_failures:
+			_log.warning("%s recovered after %d failed reads", self.name, self.consecutive_failures)
+		self.consecutive_failures = 0
+		self.latest = readings
+		self.error = None
+		return readings
+
+	def _check_stuck(self, readings):
+		if self.stuck_after is None:
+			return
+		self._repeats = self._repeats + 1 if readings == self._last else 0
+		self._last = readings
+		if self._repeats >= self.stuck_after:
+			raise SensorError(f"same reading {self._repeats + 1} times running")
 
 
 class Bme280(Sensor):
@@ -84,9 +147,15 @@ class Bme280(Sensor):
 	Runs the chip in normal mode - measuring continuously, about once a second
 	- so a read is a register fetch with nothing to wait for. The vendored
 	driver's forced mode would poll with a blocking sleep instead.
+
+	A reading exactly on one of the driver's clamps (-40/85C, 0/100%,
+	300/1100 hPa) is a failure, not weather: the maths went out of range.
+	Real readings always jitter, so a minute of identical ones is a failure
+	too.
 	"""
 
 	name = "BME280"
+	stuck_after = 60
 
 	def __init__(self, i2c, address=0x76, debug=False):
 		"""
@@ -99,7 +168,12 @@ class Bme280(Sensor):
 			OSError: If nothing answers at the address
 		"""
 		super().__init__(debug)
-		self._chip = _continuous_bme280(i2c, address)
+		self.i2c = i2c
+		self.address = address
+		self.open()
+
+	def open(self):
+		self._chip = _continuous_bme280(self.i2c, self.address)
 
 	async def read(self):
 		temperature, pressure, humidity = self._chip.read_compensated_data()
@@ -112,12 +186,22 @@ class Bme280(Sensor):
 			'pressure': pressure / 100,	# Pa -> hPa
 		}
 
+	def validate(self, readings):
+		clamped = (
+			readings['temperature'] in (-40, 85)
+			or readings['humidity'] in (0, 100)
+			or readings['pressure'] in (300, 1100)
+		)
+		if clamped:
+			raise SensorError(f"reading on a driver clamp: {readings}")
+
 
 class Tsl2591(Sensor):
 	"""Light level from an ams TSL2591.
 
 	The chip integrates continuously, so a read returns its last finished
-	measurement without waiting.
+	measurement without waiting. No stuck check: a dark room reads 0 for
+	hours, legitimately.
 	"""
 
 	name = "TSL2591"
@@ -138,8 +222,12 @@ class Tsl2591(Sensor):
 			RuntimeError: If the chip at 0x29 is not a TSL2591
 		"""
 		super().__init__(debug)
+		self.i2c = i2c
+		self.open()
+
+	def open(self):
 		from tsl2591 import TSL2591
-		self._chip = TSL2591(i2c)
+		self._chip = TSL2591(self.i2c)
 
 	async def read(self):
 		full, ir = self._chip.raw_luminosity
@@ -150,8 +238,13 @@ class Tsl2591(Sensor):
 			lux = self.MAX_LUX
 		return {'lux': lux, 'light_full': full, 'light_ir': ir}
 
+	def validate(self, readings):
+		# The full-spectrum channel includes infrared, so it can never be less.
+		if readings['light_ir'] > readings['light_full']:
+			raise SensorError(f"infrared above full spectrum: {readings}")
+
 	def disable(self):
-		"""Power the chip down. It stays off until re-created."""
+		"""Power the chip down. It stays off until re-opened."""
 		self._chip.disable()
 
 
@@ -163,9 +256,13 @@ class Sgp40(Sensor):
 	second - read() must be called at that rate, which is SensorSampler's
 	default - and needs hours to settle. voc_index is None for its first 45
 	samples, while it reports nothing meaningful.
+
+	get_state()/set_state() carry the learned baseline across a reboot; where
+	it is kept is the app's choice.
 	"""
 
 	name = "SGP40"
+	stuck_after = 60
 
 	MEASURE_MS = 30	# The chip's measurement time, from the datasheet
 	WARMUP_SAMPLES = 45	# The algorithm's initial blackout
@@ -187,24 +284,56 @@ class Sgp40(Sensor):
 		"""
 		super().__init__(debug)
 		from voc_algorithm import VOCAlgorithm
-		self._chip = _async_sgp40(i2c)
-		self.errors = Sensor.errors + (self._chip.CRCException,)
+		self.i2c = i2c
 		self.climate = climate
+		self.open()
+		# The algorithm outlives reopen(): a re-opened chip keeps the baseline.
 		self._voc = VOCAlgorithm()
 		self._voc.vocalgorithm_init()
 		self._samples = 0
+
+	def open(self):
+		self._chip = _async_sgp40(self.i2c)
+		self.errors = Sensor.errors + (self._chip.CRCException,)
 
 	async def read(self):
 		humidity, temperature = self._compensation()
 		self._chip.start_raw(humidity=humidity, temperature=temperature)
 		await asyncio.sleep_ms(self.MEASURE_MS)
 		raw = self._chip.finish_raw()
+		# Validate before the algorithm sees it, so a bad raw value never
+		# skews the learned baseline.
+		if raw in (0, 0xFFFF):
+			raise SensorError(f"raw signal {raw} is no measurement")
 
 		index = self._voc.vocalgorithm_process(raw)
 		self._samples += 1
 		if self._samples <= self.WARMUP_SAMPLES:
 			index = None
 		return {'voc_index': index, 'voc_raw': raw}
+
+	def get_state(self):
+		"""The algorithm's learned baseline, as two ints, to save."""
+		return self._voc._vocalgorithm_get_states(0, 0)
+
+	def set_state(self, state):
+		"""Restore a baseline from get_state().
+
+		Only worth it after a short interruption - Sensirion's guidance is
+		under ten minutes, or the room may have changed under it.
+		"""
+		# Mirrors Sensirion's VocAlgorithm_set_states. The vendored port's own
+		# _vocalgorithm_set_states passes its params object as an extra
+		# argument and raises TypeError, so it cannot be used.
+		mean, std = state
+		voc = self._voc
+		voc._vocalgorithm__mean_variance_estimator__set_states(
+			mean, std, voc._f16(self._PERSISTENCE_UPTIME_GAMMA))
+		voc.params.msraw = mean
+
+	# Sensirion's constant; the port's copy is a MicroPython const() with a
+	# leading underscore, which is not importable on the device.
+	_PERSISTENCE_UPTIME_GAMMA = 3 * 3600
 
 	def _compensation(self):
 		"""Humidity and temperature to compensate with."""
@@ -226,22 +355,33 @@ class SensorSampler:
 	list wins.
 	"""
 
-	def __init__(self, sensors, interval_ms=1000, debug=False):
+	def __init__(self, sensors, interval_ms=1000, reopen_after=3,
+				 recover_bus=None, debug=False):
 		"""
 		Args:
 			sensors: The Sensor objects to sample, in order
 			interval_ms: Time from one sample's start to the next. Keep it at
 				1000 if an Sgp40 is included - its algorithm assumes that.
+			reopen_after: Failed reads in a row before a sensor is re-opened,
+				and samples with every sensor failing before the bus is
+				recovered. Repeats at each multiple.
+			recover_bus: Optional function that frees a stuck bus - typically
+				recover_i2c() for the bus's pins, then re-creating the
+				machine.I2C. Called when every sensor is failing.
 			debug: If True, prints every sample
 		"""
 		self.sensors = list(sensors)
 		self.interval_ms = interval_ms
+		self.reopen_after = reopen_after
+		self.recover_bus = recover_bus
 		self.debug = debug
 		self.readings = {}
+		self.bus_recoveries = 0
+		self._all_failing = 0
 		self._sampled = asyncio.Event()
 
 	async def sample(self):
-		"""Read every sensor once, now.
+		"""Read every sensor once, now, then deal with any that keep failing.
 
 		Returns:
 			The merged readings. A sensor whose read failed is left out.
@@ -252,12 +392,45 @@ class SensorSampler:
 		self.readings = readings
 		if self.debug:
 			print(f"Sensors: {readings}")
+		self._recover()
 
 		# A fresh Event per sample, so every waiter wakes once and none of them
 		# has to clear it for the others.
 		sampled, self._sampled = self._sampled, asyncio.Event()
 		sampled.set()
 		return readings
+
+	def _recover(self):
+		"""Re-open sensors on a failure streak; recover the bus if all are."""
+		every = self.reopen_after
+		all_failing = bool(self.sensors) and all(s.consecutive_failures for s in self.sensors)
+		self._all_failing = self._all_failing + 1 if all_failing else 0
+
+		if self.recover_bus and self._all_failing and self._all_failing % every == 0:
+			_log.warning("Every sensor failing - recovering the I2C bus")
+			try:
+				self.recover_bus()
+				self.bus_recoveries += 1
+			except Exception as e:
+				_log.warning("I2C bus recovery failed: %s", e)
+			for sensor in self.sensors:
+				self._reopen(sensor)
+			return
+
+		for sensor in self.sensors:
+			if sensor.consecutive_failures and sensor.consecutive_failures % every == 0:
+				self._reopen(sensor)
+
+	def _reopen(self, sensor):
+		try:
+			sensor.reopen()
+		except Exception as e:
+			# Still gone - try again after the next streak of failures.
+			if self.debug:
+				print(f"{sensor.name}: reopen failed: {e}")
+			return
+		if sensor.reopens == 1 or self.debug:
+			_log.warning("%s re-opened after %d failed reads", sensor.name, sensor.consecutive_failures)
 
 	async def next(self):
 		"""Wait for the next sample.
@@ -276,6 +449,51 @@ class SensorSampler:
 			# Hold the interval steady however long the reads took.
 			elapsed = time.ticks_diff(time.ticks_ms(), start)
 			await asyncio.sleep_ms(max(0, self.interval_ms - elapsed))
+
+
+def recover_i2c(scl_pin, sda_pin, half_period_us=5):
+	"""Free an I2C bus a slave is holding stuck.
+
+	If a transfer is cut off mid-byte (a glitch, a reset at the wrong moment),
+	a slave can be left driving SDA low, waiting for clocks that never come -
+	and every device on the bus fails. The I2C specification's remedy
+	(UM10204, section 3.1.16): clock SCL by hand until SDA is released, up to
+	nine pulses, then send a STOP.
+
+	Afterwards the pins are plain GPIOs; re-create the machine.I2C to hand
+	them back to the I2C peripheral. On the RP2 that re-initialises the same
+	bus object everything else already holds.
+
+	Args:
+		scl_pin: The bus's SCL GPIO number
+		sda_pin: The bus's SDA GPIO number
+		half_period_us: Half a clock period; 5us is 100kHz
+
+	Returns:
+		The clock pulses it took to free SDA
+	"""
+	from machine import Pin
+
+	sda = Pin(sda_pin, Pin.IN, Pin.PULL_UP)
+	scl = Pin(scl_pin, Pin.OPEN_DRAIN)
+	scl.value(1)
+	pulses = 0
+	while not sda.value() and pulses < 9:
+		scl.value(0)
+		time.sleep_us(half_period_us)
+		scl.value(1)
+		time.sleep_us(half_period_us)
+		pulses += 1
+
+	# STOP: SDA rises while SCL is high.
+	sda = Pin(sda_pin, Pin.OPEN_DRAIN)
+	sda.value(0)
+	time.sleep_us(half_period_us)
+	scl.value(1)
+	time.sleep_us(half_period_us)
+	sda.value(1)
+	time.sleep_us(half_period_us)
+	return pulses
 
 
 def _continuous_bme280(i2c, address):

@@ -1,9 +1,36 @@
 """Fake `machine` module so lib code can be imported on a PC."""
 
+PWRON_RESET = 1
+WDT_RESET = 3
+
+# Set by tests: what reset_cause() reports, and every reset() requested.
+next_reset_cause = PWRON_RESET
+resets = []
+
+
+def reset_cause():
+	return next_reset_cause
+
+
+def reset():
+	resets.append(True)
+
+
+class WDT:
+	"""Fake watchdog that counts feeds."""
+
+	def __init__(self, timeout=5000):
+		self.timeout = timeout
+		self.feeds = 0
+
+	def feed(self):
+		self.feeds += 1
+
 
 class Pin:
 	OUT = 'OUT'
 	IN = 'IN'
+	OPEN_DRAIN = 'OPEN_DRAIN'
 	PULL_UP = 'PULL_UP'
 	PULL_DOWN = 'PULL_DOWN'
 

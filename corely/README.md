@@ -210,9 +210,58 @@ Every reading is a flat dict of named values:
 - **Tsl2591 saturates at `Tsl2591.MAX_LUX`** (about 6000 at the default gain)
   and reports that rather than raising.
 
+**Staying up unattended.** Each sensor rejects readings its chip should never
+produce (`validate()` - a value on the BME280 driver's clamps, infrared above
+full spectrum, a saturated SGP40 signal), and the BME280 and SGP40 flag a
+reading unchanged for a minute (`stuck_after`). Both count as failed reads.
+After 3 failures in a row the sampler re-opens that sensor; when every sensor
+is failing it calls `recover_bus` - typically `recover_i2c(scl, sda)`, the I2C
+spec's nine-clock bus recovery, then re-creating the `machine.I2C`. Failures
+are logged once per incident, when the streak starts and ends.
+
+`Sgp40.get_state()` / `set_state()` carry the VOC baseline across a reset;
+where it is kept, and whether a restore is fresh enough, is the app's call.
+
 Each class imports its driver when created, so `corely.sensors` costs nothing
 for boards a project does not use. The drivers - `bme280`, `tsl2591`, `sgp40`
 and `voc_algorithm` - are vendored; see `vendor/README.md`.
+
+## Logs and system health
+
+For a device that runs for months unattended:
+
+```python
+boot = boot_number("/boot.txt")
+logging.getLogger().addHandler(RotatingFileHandler("/log.txt", boot=boot))
+
+reason = last_reset("/reset.txt")     # 'power-on', 'watchdog', 'crash', ...
+guard = BootGuard("/boots.txt")       # .tripped after 3 boots that die early
+log_task_errors(logging.getLogger("app"))
+monitor = SystemMonitor()             # loop lag, memory low-water, uptime
+asyncio.create_task(Watchdog().run()) # production only - see below
+```
+
+- **`RotatingFileHandler`** works with the standard `logging` API
+  (micropython-lib's, vendored). Size-capped with numbered backups - 64KB of
+  flash at most by default - and each line is opened, written and closed, so
+  a crash cannot strand it in a buffer. Lines carry the boot number and
+  uptime, since there is no wall clock across a reset. `closed_files()` lists
+  rotated files for a future log shipper to send and delete.
+- **`Watchdog`** feeds `machine.WDT` from inside the event loop, so a hung
+  loop resets the board. It cannot be stopped once started, including by
+  `mpremote` - production builds only.
+- **`last_reset()` / `reset()`**: on the RP2 `machine.reset()` reports as a
+  watchdog reset, so `reset(reason, path)` leaves a marker that
+  `last_reset()` reports instead.
+- **`BootGuard`** counts boots that do not last a minute, so the app can fall
+  back to a safe mode rather than crash forever.
+- **`log_task_errors()`** logs an exception escaping any asyncio task, with
+  its traceback.
+- **`SystemMonitor`** measures event-loop lag and samples memory after a
+  collection, keeping the lowest seen. `memory()`, `storage()` and
+  `firmware()` read the rest.
+
+Paths are the app's: Corely does no I/O it was not given.
 
 ## Usage in projects
 
@@ -227,7 +276,9 @@ from corely.message import PrintMessage
 from corely.wifi import WiFiConnection, WiFiConnectAction, WiFiDisconnectAction, WiFiMonitor
 from corely.ble_peripheral import BleUartPeripheral
 from corely.ble_central import BleUartCentral
-from corely.sensors import Bme280, Tsl2591, Sgp40, SensorSampler
+from corely.sensors import Bme280, Tsl2591, Sgp40, SensorSampler, recover_i2c
+from corely.logs import RotatingFileHandler, boot_number, format_exception
+from corely.system import Watchdog, BootGuard, SystemMonitor, last_reset, reset
 ```
 
 Typical shape of a project:
@@ -266,8 +317,11 @@ Every module is a flat file in this folder:
 - `ble_uart.py` - Nordic UART Service UUIDs
 - `ble_peripheral.py` - `BleUartPeripheral` (something connects to this device)
 - `ble_central.py` - `BleUartCentral` (this device connects to a peripheral)
-- `sensors.py` - the `Sensor` base, `Bme280`, `Tsl2591` and `Sgp40`, and the
-  `SensorSampler` that owns them
+- `sensors.py` - the `Sensor` base, `Bme280`, `Tsl2591` and `Sgp40`, the
+  `SensorSampler` that owns them, and `recover_i2c()`
+- `logs.py` - `RotatingFileHandler`, `boot_number()`, `format_exception()`
+- `system.py` - `Watchdog`, `BootGuard`, `last_reset()`/`reset()`,
+  `log_task_errors()`, `SystemMonitor`, and `memory()`/`storage()`/`firmware()`
 
 ## Projects using this library
 
