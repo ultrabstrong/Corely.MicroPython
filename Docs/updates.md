@@ -31,6 +31,25 @@ Paths outside the filesystem (absolute, or containing `..`) fail the manifest ch
 
 ## Installing and Rolling Back
 
+```mermaid
+sequenceDiagram
+    participant Host as Release host
+    participant Up as Updater
+    participant Flash
+    participant Boot as App boot code
+    Up->>Host: GET manifest.json
+    Host-->>Up: version, sizes, hashes
+    loop each file
+        Up->>Host: GET file
+        Up->>Flash: write to staging, hash checked
+    end
+    Up->>Flash: stage() marks it ready
+    Note over Up,Boot: reboot
+    Boot->>Flash: swap staged files in, keep the old
+    Note over Boot: on trial until a boot stays up
+    Boot->>Flash: confirm, or restore the old
+```
+
 `Updater` stops at staging. Swapping the files in at boot, and rolling back a version that will not stay up, belong to the app, in code its releases never replace: an update must not be able to break its own way back. Install by renaming rather than copying, so a power cut mid install can resume.
 
 ## Notes

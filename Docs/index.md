@@ -2,6 +2,44 @@
 
 Asyncio building blocks for MicroPython devices. Everything that changes state switches Actions, so LEDs, screens and radios are interchangeable wherever an Action is accepted.
 
+## Concept Map
+
+```mermaid
+flowchart LR
+    subgraph events["What changes state"]
+        button["<b>Button</b><br/>press, hold, double"]
+        monitor["<b>WiFiMonitor</b><br/>connectivity"]
+        ble["<b>BleUartPeripheral</b><br/>advertising, connected"]
+        cycle["<b>SleepCycle</b><br/>awake, asleep"]
+    end
+    action(["<b>Action</b><br/>on() and off()"])
+    subgraph switched["What gets switched"]
+        led["<b>Led, RgbLed</b><br/>and their views"]
+        group["<b>ActionGroup, ActionCycler</b><br/>several as one"]
+        stay["<b>WiFiStayConnected</b><br/>the radio"]
+        own["<b>Your own Actions</b><br/>a screen label, a buzzer"]
+    end
+    button --> action
+    monitor --> action
+    ble --> action
+    cycle --> action
+    action --> led
+    action --> group
+    action --> stay
+    action --> own
+
+    classDef source fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef hub fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef target fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class button,monitor,ble,cycle source
+    class action hub
+    class led,group,stay,own target
+    style events fill:none,stroke:#8c959f
+    style switched fill:none,stroke:#8c959f
+```
+
+Amber is what changes state, green is what it switches; the Action contract in blue is all either side knows of the other.
+
 - **Actions**: one `on()` / `off()` contract for anything switchable, with task lifecycles handled
 - **Hardware**: LEDs, RGB LEDs and buttons with gestures, all non-blocking
 - **Connectivity**: WiFi that stays connected and sets the clock, BLE UART in both roles

@@ -32,6 +32,21 @@ if last_reset("/reset.txt") == system.DEEP_SLEEP:
     why = system.wake_reason(alarms={'dark': light}, pins={'button': button_trigger})
 ```
 
+```mermaid
+sequenceDiagram
+    participant App as Program
+    participant Chip as Sensor
+    App->>Chip: arm_alarm(below)
+    Note over App: deep_sleep(15000)<br/>RAM is lost
+    Note over Chip: reading crosses<br/>alarm latches
+    Chip->>App: INT pin wakes the board
+    Note over App: reboot<br/>main.py from the top
+    App->>Chip: wake_reason() reads alarm_latched()
+    Chip-->>App: still latched, so 'dark'
+```
+
+The latch is the only trace of the wake that survives the reboot.
+
 - **Every wake is a reboot.** RAM is gone, so save what must survive first.
 - **`wake_reason()` reads what is still true.** A latched sensor alarm names its wake reliably. A button press is usually released by the time the program runs, and reads as `'timer'`.
 - **Call it before anything re-arms the alarms**, which clears their latches.

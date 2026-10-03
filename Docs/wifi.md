@@ -20,6 +20,32 @@ stay.off()                                    # disconnects, radio off
 
 With no credentials it waits for some, so a provisioning flow can hand them over later. New credentials cut a long backoff short.
 
+```mermaid
+flowchart LR
+    start(["<b>stay.on()</b>"])
+    waiting["<b>Waiting</b><br/>until there are credentials"]
+    joining["<b>Joining</b><br/>up to timeout_ms"]
+    joined["<b>Joined</b><br/>on_connect() runs"]
+    backoff["<b>Backoff</b><br/>5s, doubling to 5 min"]
+    start --> waiting
+    waiting --> joining
+    joining -- "joined" --> joined
+    joining -- "failed" --> backoff
+    joined -- "lost" --> joining
+    backoff -- "retry" --> joining
+
+    classDef neutral fill:#f6f8fa,stroke:#8c959f,color:#24292f
+    classDef busy fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef good fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef wait fill:#fef3c7,stroke:#d97706,color:#78350f
+    class start,waiting neutral
+    class joining busy
+    class joined good
+    class backoff wait
+```
+
+Blue is trying to join, green is connected, amber is waiting to try again. `stay.off()` leaves any state: it disconnects and switches the radio off.
+
 ### Showing the state
 
 ```python
