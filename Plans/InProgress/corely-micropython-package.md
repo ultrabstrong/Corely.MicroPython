@@ -1,5 +1,21 @@
 # Plan: Corely.MicroPython as a Package of Its Own
 
+## Outcome
+
+- **Corely.MicroPython is public** with its history carried over (13
+  commits; earlier history from before `corely/` had that name stayed
+  behind). CI passes on GitHub: 298 host tests, all 16 modules through
+  `mpy-cross` 1.27, `package.json` current.
+- **`Corely.MicroPython-v1.0.0` is released** by the tag pipeline, with
+  `Corely.MicroPython-1.0.0-mpy.zip` and `-src.zip`. Every module URL in
+  `package.json` resolves at the tag, the three micropython-lib dependencies
+  are in its index, and all four driver URLs in `sensors.json` resolve.
+- **This repository runs on the release:** `vendor/corely/` is 1.0.0,
+  byte-identical to the code it replaced; the demo tests pass against it and
+  against a checkout through `CORELY_PATH`.
+- **Not yet done on the board** (it was on a charger): `mip install` from
+  GitHub, and a deploy from `vendor/corely`.
+
 ## Context
 
 `corely/` was built to be lifted out ("self-contained, so it can be lifted
