@@ -385,6 +385,26 @@ asyncio.create_task(Watchdog().run()) # production only - see below
 
 Paths are the app's: Corely does no I/O it was not given.
 
+## Over-the-air updates
+
+`Updater` fetches a release - a folder of files plus `manifest.json` with
+each file's size and SHA-256 - checks every byte, and stages it:
+
+```python
+updater = Updater("http://192.168.1.20:8000", current_version)
+manifest = await updater.check()          # None if up to date
+if manifest:
+    await updater.download(manifest)      # UpdateError on any mismatch
+    updater.stage(manifest)               # installed on the next boot
+```
+
+Nothing live changes: installing and rolling back belong to code the app
+keeps out of its releases (the demos' `boot.py` and `ota.py`), so a bad
+update cannot break its own way back. Downloads go through the vendored
+`aiohttp`, so they never block the loop. Plain HTTP proves the files arrived
+as the manifest says, not who sent the manifest - a hosted release needs
+HTTPS with the certificate checked.
+
 ## Usage in projects
 
 MicroPython automatically searches `/lib/` for modules:
@@ -404,6 +424,7 @@ from corely.logs import RotatingFileHandler, boot_number, format_exception, utc_
 from corely.system import Watchdog, BootGuard, SystemMonitor, last_reset, reset
 from corely.sleep import SleepCycle, PinTrigger
 from corely.alarms import ThresholdAlarm
+from corely.update import Updater, UpdateError
 ```
 
 Typical shape of a project:
@@ -447,6 +468,7 @@ Every module is a flat file in this folder:
   `SensorSampler` that owns them, and `recover_i2c()`
 - `sleep.py` - `SleepCycle` and `PinTrigger`
 - `alarms.py` - `ThresholdAlarm` and the sensor alarm contract
+- `update.py` - `Updater`: fetch, verify and stage an over-the-air release
 - `logs.py` - `RotatingFileHandler`, `boot_number()`, `format_exception()`,
   `utc_stamp()`
 - `system.py` - `Watchdog`, `BootGuard`, `last_reset()`/`reset()`,
