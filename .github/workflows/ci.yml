@@ -1,0 +1,47 @@
+name: CI
+
+# Test on every push and pull request. release.yml runs the same checks, but only on a version
+# tag, so without this a commit that breaks the package sits on master undetected until someone
+# cuts a release.
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # version check compares against the last release tag
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # MicroPython's own compiler, at the firmware version the package is tested on.
+      - name: Install mpy-cross
+        run: pip install "mpy-cross==1.27.0.post2"
+
+      - name: Test
+        working-directory: tests
+        run: python -m unittest discover -s . -t .
+
+      # CPython accepts syntax MicroPython does not; its compiler does not.
+      - name: Compile with mpy-cross
+        run: python scripts/build.py --check
+
+      - name: package.json lists every module
+        run: python scripts/package.py --check
+
+      # Reports only. A bump is required at release time, not on every push.
+      - name: Package version
+        run: bash scripts/check-package-versions.sh

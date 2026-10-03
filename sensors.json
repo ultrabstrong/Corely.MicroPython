@@ -1,0 +1,20 @@
+{
+  "urls": [
+    [
+      "bme280/__init__.py",
+      "https://raw.githubusercontent.com/robert-hh/BME280/a9a7080/bme280_float.py"
+    ],
+    [
+      "sgp40/__init__.py",
+      "https://raw.githubusercontent.com/agners/micropython-sgp40/65d8270/sgp40.py"
+    ],
+    [
+      "tsl2591/__init__.py",
+      "https://raw.githubusercontent.com/mchobby/esp8266-upy/9e6f852/tsl2591/lib/tsl2591.py"
+    ],
+    [
+      "voc_algorithm/__init__.py",
+      "https://raw.githubusercontent.com/adafruit/Adafruit_CircuitPython_SGP40/8bfcca6/adafruit_sgp40/voc_algorithm.py"
+    ]
+  ]
+}

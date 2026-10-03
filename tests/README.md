@@ -1,6 +1,6 @@
 # Tests
 
-Host-run unit tests for Corely. No Pico, no pytest, no install:
+Host-run unit tests for Corely. No device, no pytest, no install:
 
 ```
 cd tests
@@ -24,8 +24,7 @@ every test module imports it first:
 - The repo root goes on `sys.path`, so `corely.*` imports resolve the same way
   they do on the device, where the package is deployed to `/lib/corely`.
 
-Nothing here imports project code, so these tests travel with the library when
-it moves to its own repo. Project-level tests live in `pico2/tests/`.
+Nothing here imports application code: the tests cover the library alone.
 
 ## What is covered
 
@@ -53,7 +52,7 @@ of returning `None` from `advertise()` when advertising is stopped. It does not
 test BLE itself - a fake radio would only test the fake.
 
 Verified on hardware separately: advertising, a phone connecting, and the echo
-round trip via `pico2/demos/implementations/ble_demo.py`.
+round trip, from a demo application on a Pico 2 W.
 
 `corely/ble_central.py` has no host tests, and only its scanning path has run on
 hardware. Connecting, discovery and notifications need a second BLE device.

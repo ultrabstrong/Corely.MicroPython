@@ -1,0 +1,54 @@
+name: Release
+
+# Publishes a GitHub release for a version tag. The repository itself is the package feed: mip
+# installs straight from it at the tag (`mip install github:ultrabstrong/Corely.MicroPython@<tag>`),
+# so the release adds the precompiled .mpy bundle and the source for copying by hand.
+on:
+  push:
+    tags:
+      - "Corely.MicroPython-v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write # create the release
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Package
+        id: package
+        run: bash scripts/release-package.sh "$GITHUB_REF_NAME"
+
+      - name: Install mpy-cross
+        run: pip install "mpy-cross==1.27.0.post2"
+
+      - name: Test
+        working-directory: tests
+        run: python -m unittest discover -s . -t .
+
+      - name: package.json lists every module
+        run: python scripts/package.py --check
+
+      - name: Build
+        run: python scripts/build.py
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --title "Corely.MicroPython ${{ steps.package.outputs.version }}"
+          --generate-notes
+          --notes "Install on a board: \`mpremote mip install github:ultrabstrong/Corely.MicroPython@$GITHUB_REF_NAME\`"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          path: dist/*
