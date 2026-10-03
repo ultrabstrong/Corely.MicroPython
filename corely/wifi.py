@@ -1,10 +1,20 @@
-"""WiFi connection, connect/disconnect actions, and connectivity monitoring."""
+"""WiFi connection, connect/disconnect actions, connectivity monitoring, and
+setting the clock over it.
+
+	WiFiConnection     one network, joined without blocking the event loop
+	WiFiStayConnected  an Action: joined and rejoined for as long as it is on
+	WiFiMonitor        switches Actions as connectivity changes
+	sync_clock()       sets the clock to UTC over NTP
+"""
 
 import asyncio
+import logging
 import network
 import time
 
 from corely.action import Action, TaskAction
+
+log = logging.getLogger("corely.wifi")
 
 
 class WiFiConnection:
@@ -34,7 +44,7 @@ class WiFiConnection:
 		Returns:
 			True if connected, False on timeout or missing credentials
 		"""
-		if not self.ssid or not self.password:
+		if not self.has_credentials:
 			print("WiFi credentials not loaded")
 			return False
 
@@ -63,11 +73,35 @@ class WiFiConnection:
 		finally:
 			self.connecting = False
 
-	def disconnect(self):
-		"""Disconnect from WiFi."""
+	def disconnect(self, radio_off=False):
+		"""Disconnect from WiFi.
+
+		Args:
+			radio_off: Also switch the radio off. Light sleep returns at once
+				while the radio is on, so anything about to sleep wants this.
+		"""
 		self.wlan.disconnect()
+		if radio_off:
+			self.wlan.active(False)
 		if self.debug:
 			print("Disconnected from WiFi")
+
+	@property
+	def has_credentials(self):
+		return bool(self.ssid and self.password)
+
+	def set_credentials(self, ssid, password):
+		"""Switch to another network. Drops the current link, so whatever keeps
+		it connected joins the new one.
+
+		Args:
+			ssid: Network name to join
+			password: Network password
+		"""
+		self.ssid = ssid
+		self.password = password
+		if self.wlan.active():
+			self.wlan.disconnect()
 
 	def is_connecting(self):
 		return self.connecting
@@ -123,6 +157,96 @@ class WiFiDisconnectAction(Action):
 	def off(self):
 		"""No cleanup needed - the next action handles the state change."""
 		pass
+
+
+class WiFiStayConnected(TaskAction):
+	"""Keeps the board on WiFi for as long as it is on.
+
+	Joins, and rejoins whenever the link drops, waiting longer after each
+	failure (retry_ms, doubling up to max_retry_ms) so a missing network does
+	not keep the radio busy. With no credentials it waits for some - a
+	provisioning flow can hand them over with set_credentials() at any time.
+
+	Off disconnects and switches the radio off: light sleep returns at once
+	while the radio is on, so a sleep turns this off first.
+
+	Logs once per incident - joined, lost, cannot reach - never per retry.
+	"""
+
+	def __init__(self, wifi_connection, on_connect=None, timeout_ms=15000,
+				 retry_ms=5000, max_retry_ms=300000, poll_ms=2000):
+		"""
+		Args:
+			wifi_connection: WiFiConnection to keep connected
+			on_connect: Called with no arguments each time it joins - to set
+				the clock, say. Must not block for long.
+			timeout_ms: How long one attempt to join may take
+			retry_ms: Wait after the first failure; doubles after each
+			max_retry_ms: The longest wait between attempts
+			poll_ms: How often to check that a joined link is still up
+		"""
+		super().__init__()
+		self.wifi = wifi_connection
+		self.on_connect = on_connect
+		self.timeout_ms = timeout_ms
+		self.retry_ms = retry_ms
+		self.max_retry_ms = max_retry_ms
+		self.poll_ms = poll_ms
+		self.failures = 0
+
+	async def run(self):
+		joined = False
+		while True:
+			if self.wifi.is_connected():
+				if not joined:
+					joined = True
+					if self.failures:
+						log.info("WiFi joined %s after %d failed tries", self.wifi.ssid, self.failures)
+					else:
+						log.info("WiFi joined %s", self.wifi.ssid)
+					self.failures = 0
+					if self.on_connect:
+						self.on_connect()
+				await asyncio.sleep_ms(self.poll_ms)
+				continue
+
+			if joined:
+				joined = False
+				log.warning("WiFi lost %s", self.wifi.ssid)
+
+			if not self.wifi.has_credentials:
+				await asyncio.sleep_ms(self.poll_ms)
+				continue
+
+			if await self.wifi.connect(timeout_ms=self.timeout_ms):
+				continue
+			self.failures += 1
+			if self.failures == 1:
+				log.warning("WiFi cannot reach %s, retrying", self.wifi.ssid)
+			await self._wait(self.backoff_ms())
+
+	async def _wait(self, ms):
+		"""Wait before retrying - cut short by new credentials, which deserve
+		a try straight away rather than after a long backoff."""
+		credentials = (self.wifi.ssid, self.wifi.password)
+		start = time.ticks_ms()
+		while time.ticks_diff(time.ticks_ms(), start) < ms:
+			await asyncio.sleep_ms(min(self.poll_ms, ms))
+			if (self.wifi.ssid, self.wifi.password) != credentials:
+				self.failures = 0
+				return
+
+	def backoff_ms(self):
+		"""The wait before the next attempt, given the failures so far."""
+		return min(self.retry_ms << min(self.failures - 1, 16), self.max_retry_ms)
+
+	def cleanup(self):
+		self.failures = 0
+		self.wifi.connecting = False
+		try:
+			self.wifi.disconnect(radio_off=True)
+		except OSError:
+			pass
 
 
 class WiFiMonitor:
@@ -246,3 +370,38 @@ class WiFiMonitor:
 					await writer.wait_closed()
 				except Exception:
 					pass
+
+
+_clock_set = False
+
+
+def sync_clock(host=None):
+	"""Set the board's clock to UTC over NTP. Needs a working connection.
+
+	Uses the built-in ntptime, which blocks for one round trip - about 110ms on
+	a home network, up to ntptime's 1s timeout when the server does not answer.
+	Call it when joining and every few hours, not in a tight loop.
+
+	Args:
+		host: NTP server; ntptime's default pool if None
+
+	Returns:
+		True if the clock was set
+	"""
+	global _clock_set
+	import ntptime
+	if host:
+		ntptime.host = host
+	try:
+		ntptime.settime()
+	except (OSError, OverflowError) as e:
+		log.warning("Clock sync failed: %s", e)
+		return False
+	_clock_set = True
+	return True
+
+
+def clock_is_set():
+	"""True once sync_clock() has succeeded this boot - until then the board's
+	time of day is meaningless."""
+	return _clock_set

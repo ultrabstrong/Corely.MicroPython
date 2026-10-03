@@ -132,6 +132,41 @@ own gains if your LED differs.
 anything below full switches the pin to PWM on demand - so a pin without PWM
 (the Pico W's onboard LED lives on the wireless chip) can only run at full.
 
+## WiFi and the clock
+
+A board that should stay online keeps one `WiFiConnection` up with
+`WiFiStayConnected`, and sets its clock on each join:
+
+```python
+wifi = WiFiConnection(ssid, password)        # credentials are the app's
+stay = WiFiStayConnected(wifi, on_connect=sync_clock)
+stay.on()                                     # joins, rejoins with backoff
+wifi.set_credentials(new_ssid, new_password)  # moves it to another network
+stay.off()                                    # disconnects, radio off
+```
+
+- **Backoff:** 5s after the first failure, doubling to 5 minutes, so a missing
+  network does not keep the radio busy. New credentials cut a wait short.
+- **No credentials** is a state, not an error: it waits for some.
+- **Turn it off before sleeping.** Light sleep returns at once while the radio
+  is on - a `SleepCycle` would spin awake instead of sleeping.
+- **`sync_clock()`** sets the clock to UTC over NTP (the built-in `ntptime`,
+  which blocks for one round trip - ~110ms). `clock_is_set()` says whether it
+  has this boot.
+
+## Bluetooth messages
+
+`BleUartPeripheral` hands over each write (`on_write`) or whole lines
+(`on_line`). A phone sends at most 20 bytes a write unless it negotiates
+more, so a long message arrives in pieces; `on_line` joins them, ending a
+line at a newline or a pause (terminal apps differ on sending one). Writes
+can carry up to `rx_size` bytes (128), and `send()` splits replies to fit
+the connection.
+
+Stock MicroPython on the Pico W has no Bluetooth pairing, so the link is not
+encrypted - anything that needs a lock has to build one in the app (the
+demos' BLE console asks for a code shown on the screen).
+
 ## Buttons
 
 `Button` calls a plain function per gesture - no subclassing, no Action
@@ -331,7 +366,8 @@ asyncio.create_task(Watchdog().run()) # production only - see below
   (micropython-lib's, vendored). Size-capped with numbered backups - 64KB of
   flash at most by default - and each line is opened, written and closed, so
   a crash cannot strand it in a buffer. Lines carry the boot number and
-  uptime, since there is no wall clock across a reset. `closed_files()` lists
+  uptime, plus the UTC time once something has set the clock (`wall_clock=`,
+  e.g. `lambda: utc_stamp() if clock_is_set() else None`). `closed_files()` lists
   rotated files for a future log shipper to send and delete.
 - **`Watchdog`** feeds `machine.WDT` from inside the event loop, so a hung
   loop resets the board. It cannot be stopped once started, including by
@@ -360,10 +396,11 @@ from corely.led import Led
 from corely.rgb_led import RgbLed, RED, GREEN, BLUE, COLOURS
 from corely.message import PrintMessage
 from corely.wifi import WiFiConnection, WiFiConnectAction, WiFiDisconnectAction, WiFiMonitor
+from corely.wifi import WiFiStayConnected, sync_clock, clock_is_set
 from corely.ble_peripheral import BleUartPeripheral
 from corely.ble_central import BleUartCentral
 from corely.sensors import Bme280, Tsl2591, Sgp40, SensorSampler, recover_i2c
-from corely.logs import RotatingFileHandler, boot_number, format_exception
+from corely.logs import RotatingFileHandler, boot_number, format_exception, utc_stamp
 from corely.system import Watchdog, BootGuard, SystemMonitor, last_reset, reset
 from corely.sleep import SleepCycle, PinTrigger
 from corely.alarms import ThresholdAlarm
@@ -401,7 +438,8 @@ Every module is a flat file in this folder:
 - `button.py` - `Button`, polled and debounced, calling a function per
   gesture: press, release, long press, double press, key-repeat; `active_low`
   and `pull` for other wirings
-- `wifi.py` - connection, connect/disconnect actions, `WiFiMonitor`
+- `wifi.py` - connection, connect/disconnect actions, `WiFiStayConnected`,
+  `WiFiMonitor`, and `sync_clock()`
 - `ble_uart.py` - Nordic UART Service UUIDs
 - `ble_peripheral.py` - `BleUartPeripheral` (something connects to this device)
 - `ble_central.py` - `BleUartCentral` (this device connects to a peripheral)
@@ -409,7 +447,8 @@ Every module is a flat file in this folder:
   `SensorSampler` that owns them, and `recover_i2c()`
 - `sleep.py` - `SleepCycle` and `PinTrigger`
 - `alarms.py` - `ThresholdAlarm` and the sensor alarm contract
-- `logs.py` - `RotatingFileHandler`, `boot_number()`, `format_exception()`
+- `logs.py` - `RotatingFileHandler`, `boot_number()`, `format_exception()`,
+  `utc_stamp()`
 - `system.py` - `Watchdog`, `BootGuard`, `last_reset()`/`reset()`,
   `log_task_errors()`, `SystemMonitor`, `deep_sleep()`/`wake_reason()`, and
   `memory()`/`storage()`/`firmware()`

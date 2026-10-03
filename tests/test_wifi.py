@@ -6,12 +6,14 @@ from unittest import mock
 
 import harness  # noqa: F401
 
+from corely import wifi
 from corely.action import Action
 from corely.wifi import (
 	WiFiConnection,
 	WiFiConnectAction,
 	WiFiDisconnectAction,
 	WiFiMonitor,
+	WiFiStayConnected,
 )
 
 
@@ -231,6 +233,115 @@ class WiFiMonitorTests(unittest.IsolatedAsyncioTestCase):
 			await self.run_monitor(ms=120)
 
 		self.assertEqual(self.monitor.get_current_state(), WiFiMonitor.STATE_NO_INTERNET)
+
+
+class StayConnectedTests(unittest.IsolatedAsyncioTestCase):
+	def setUp(self):
+		self.wifi = WiFiConnection('net', 'secret')
+		self.joins = []
+		self.keeper = WiFiStayConnected(
+			self.wifi, on_connect=lambda: self.joins.append(self.wifi.ssid),
+			timeout_ms=30, retry_ms=20, max_retry_ms=80, poll_ms=10)
+
+	async def asyncTearDown(self):
+		self.keeper.off()
+
+	async def test_joins_and_reports_it_once(self):
+		self.keeper.on()
+		await asyncio.sleep_ms(80)
+
+		self.assertTrue(self.wifi.is_connected())
+		self.assertEqual(self.joins, ['net'])
+
+	async def test_rejoins_after_the_link_drops(self):
+		self.keeper.on()
+		await asyncio.sleep_ms(50)
+
+		self.wifi.wlan.disconnect()		# The router went away and came back
+		await asyncio.sleep_ms(80)
+
+		self.assertTrue(self.wifi.is_connected())
+		self.assertEqual(self.joins, ['net', 'net'])
+
+	async def test_backs_off_while_the_network_is_missing(self):
+		self.wifi.wlan.fail_to_connect = True
+		self.keeper.on()
+		# Each attempt takes ~200ms (connect polls the link every 200ms), then
+		# waits 20, 40, 80... - a few tries, not one per poll.
+		await asyncio.sleep_ms(800)
+
+		self.assertGreaterEqual(self.keeper.failures, 2)
+		self.assertLess(len(self.wifi.wlan.connect_calls), 6)
+
+	async def test_backoff_doubles_up_to_the_limit(self):
+		waits = []
+		for failures in range(1, 6):
+			self.keeper.failures = failures
+			waits.append(self.keeper.backoff_ms())
+
+		self.assertEqual(waits, [20, 40, 80, 80, 80])
+
+	async def test_waits_for_credentials(self):
+		wifi = WiFiConnection(None, None)
+		keeper = WiFiStayConnected(wifi, poll_ms=10)
+		keeper.on()
+		await asyncio.sleep_ms(40)
+		self.assertEqual(wifi.wlan.connect_calls, [])
+
+		wifi.set_credentials('new', 'pw')
+		await asyncio.sleep_ms(60)
+		keeper.off()
+
+		self.assertEqual(wifi.wlan.connect_calls, [('new', 'pw')])
+
+	async def test_new_credentials_move_it_to_the_new_network(self):
+		self.keeper.on()
+		await asyncio.sleep_ms(50)
+
+		self.wifi.set_credentials('other', 'pw2')
+		await asyncio.sleep_ms(80)
+
+		self.assertEqual(self.wifi.wlan.connect_calls[-1], ('other', 'pw2'))
+		self.assertEqual(self.joins, ['net', 'other'])
+
+	async def test_new_credentials_cut_a_long_backoff_short(self):
+		self.wifi.wlan.fail_to_connect = True
+		keeper = WiFiStayConnected(self.wifi, timeout_ms=30, retry_ms=60000, poll_ms=10)
+		keeper.on()
+		await asyncio.sleep_ms(300)		# First attempt failed; a minute's wait
+		self.assertEqual(len(self.wifi.wlan.connect_calls), 1)
+
+		self.wifi.wlan.fail_to_connect = False
+		self.wifi.set_credentials('fixed', 'pw')
+		await asyncio.sleep_ms(100)
+		keeper.off()
+
+		self.assertEqual(self.wifi.wlan.connect_calls[-1], ('fixed', 'pw'))
+
+	async def test_off_switches_the_radio_off(self):
+		"""Light sleep returns at once while the radio is on."""
+		self.keeper.on()
+		await asyncio.sleep_ms(50)
+
+		self.keeper.off()
+
+		self.assertFalse(self.wifi.is_connected())
+		self.assertFalse(self.wifi.wlan.active())
+
+
+class ClockTests(unittest.TestCase):
+	def test_sets_the_clock(self):
+		ntptime = mock.Mock()
+		with mock.patch.dict('sys.modules', {'ntptime': ntptime}):
+			self.assertTrue(wifi.sync_clock())
+		ntptime.settime.assert_called_once()
+		self.assertTrue(wifi.clock_is_set())
+
+	def test_a_failed_sync_is_reported_not_raised(self):
+		ntptime = mock.Mock()
+		ntptime.settime.side_effect = OSError(110)
+		with mock.patch.dict('sys.modules', {'ntptime': ntptime}):
+			self.assertFalse(wifi.sync_clock())
 
 
 class WiFiActionTests(unittest.IsolatedAsyncioTestCase):

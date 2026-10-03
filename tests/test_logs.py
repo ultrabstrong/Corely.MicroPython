@@ -8,7 +8,7 @@ import unittest
 
 import harness  # noqa: F401
 
-from corely.logs import RotatingFileHandler, boot_number, format_exception
+from corely.logs import RotatingFileHandler, boot_number, format_exception, utc_stamp
 
 
 class Record:
@@ -65,6 +65,18 @@ class LineFormatTests(LogTestCase):
 			logger.removeHandler(handler)
 
 		self.assertIn("ERROR test.logs: from cpython", self.read())
+
+	def test_starts_with_utc_once_the_clock_is_set(self):
+		stamp = [None]
+		handler = self.make(boot=7, wall_clock=lambda: stamp[0])
+
+		handler.emit(Record("before"))
+		stamp[0] = utc_stamp(1790996299)
+		handler.emit(Record("after"))
+
+		self.assertEqual(self.read(),
+			"#7 +12.3s ERROR test: before\n"
+			"2026-10-03T02:58:19Z #7 +12.3s ERROR test: after\n")
 
 
 class RotationTests(LogTestCase):

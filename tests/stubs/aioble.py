@@ -60,6 +60,12 @@ class Characteristic:
 		self._event.set()
 
 
+class BufferedCharacteristic(Characteristic):
+	def __init__(self, *args, max_len=20, append=False, **kwargs):
+		super().__init__(*args, **kwargs)
+		self.max_len = max_len
+
+
 class Service:
 	def __init__(self, uuid):
 		self.uuid = uuid
@@ -72,9 +78,15 @@ class Connection:
 		self._disconnected = asyncio.Event()
 		self.entered = False
 		self.exited = False
+		self.mtu = None
+		self.disconnect_calls = 0
 
 	def is_connected(self):
 		return self._connected
+
+	async def disconnect(self, timeout_ms=2000):
+		self.disconnect_calls += 1
+		self.drop()
 
 	async def disconnected(self, timeout_ms=None):
 		await self._disconnected.wait()

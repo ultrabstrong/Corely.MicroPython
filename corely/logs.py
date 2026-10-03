@@ -7,10 +7,11 @@ the app log the way any Python does. This module adds what that lacks:
 	boot_number()        a count of boots, since the clock resets with the board
 	format_exception()   a traceback as text, on MicroPython or CPython
 
-Lines carry the boot number and uptime instead of a time of day - there is no
-wall clock until something sets one:
+Lines carry the boot number and uptime, and the time in UTC once something
+has set the clock (until then there is no time of day to give):
 
 	#12 +3602.4s ERROR corely.sensors: BME280 read failed: [Errno 5] EIO
+	2026-10-03T02:58:19Z #12 +3605.0s INFO corely.wifi: WiFi joined home
 
 Setting it up is the app's job (Corely does no I/O it was not given):
 
@@ -62,6 +63,17 @@ def boot_number(path):
 	return count
 
 
+def utc_stamp(seconds=None):
+	"""A time as ISO 8601 UTC, e.g. '2026-10-03T02:58:19Z'.
+
+	Args:
+		seconds: Seconds since the epoch; now if None. The board's clock is
+			UTC once set over NTP.
+	"""
+	t = time.gmtime(time.time() if seconds is None else seconds)
+	return "{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}Z".format(*t[:6])
+
+
 def format_exception(error):
 	"""An exception and its traceback as text."""
 	if hasattr(sys, "print_exception"):
@@ -82,7 +94,7 @@ class RotatingFileHandler:
 	"""
 
 	def __init__(self, path, max_bytes=16384, backups=3, level=WARNING, boot=0,
-				 uptime_s=None):
+				 uptime_s=None, wall_clock=None):
 		"""
 		Args:
 			path: The live log file, e.g. "/log.txt"
@@ -92,6 +104,9 @@ class RotatingFileHandler:
 			boot: The boot number to stamp on each line, from boot_number()
 			uptime_s: Function returning seconds since boot. Defaults to
 				MicroPython's time.ticks_ms(), which counts from boot.
+			wall_clock: Function returning a timestamp to start each line
+				with, or None while there is no time of day - e.g.
+				`lambda: utc_stamp() if clock_is_set() else None`
 		"""
 		self.path = path
 		self.max_bytes = max_bytes
@@ -99,6 +114,7 @@ class RotatingFileHandler:
 		self.level = level
 		self.boot = boot
 		self.uptime_s = uptime_s or (lambda: time.ticks_ms() / 1000)
+		self.wall_clock = wall_clock
 		self._size = _size(path)
 
 	def setLevel(self, level):
@@ -114,8 +130,10 @@ class RotatingFileHandler:
 		message = getattr(record, "message", None)
 		if message is None:
 			message = record.getMessage()	# CPython's LogRecord
-		return "#{} +{:.1f}s {} {}: {}".format(
+		line = "#{} +{:.1f}s {} {}: {}".format(
 			self.boot, self.uptime_s(), record.levelname, record.name, message)
+		stamp = self.wall_clock() if self.wall_clock else None
+		return "{} {}".format(stamp, line) if stamp else line
 
 	def emit(self, record):
 		if record.levelno < self.level:
