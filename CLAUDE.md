@@ -25,7 +25,7 @@ python scripts/package.py --check   # package.json lists every module
 
 ## Releasing
 
-Bump `"version"` in `package.json`, then tag `<PackageId>-v<Version>`: `git tag Corely.MicroPython-v1.0.1 && git push origin Corely.MicroPython-v1.0.1`. The tag triggers `release.yml`, which fails unless the tag's version equals `package.json`'s, then tests, compiles with `mpy-cross` and publishes a GitHub release with the `.mpy` and source bundles. Tags are pushed only with the owner's say-so. `ci.yml` runs the same checks on every push, and `scripts/check-package-versions.sh` reports a change since the last tag without a version bump.
+Bump `"version"` in `package.json`, then tag `<PackageId>-v<Version>`: `git tag Corely.MicroPython-v1.0.1 && git push origin Corely.MicroPython-v1.0.1`. The tag triggers `release.yml`, which fails unless the tag's version equals `package.json`'s, then tests, compiles with `mpy-cross` and publishes a GitHub release with the `.mpy` and source bundles. Commits go straight to `master`: GitHub's pull request rule is there, but the owner bypasses it for this repository. Tags are pushed only with the owner's say-so. `ci.yml` runs the same checks on every push, and `scripts/check-package-versions.sh` reports a change since the last tag without a version bump.
 
 The repository is the package feed: `mip` installs from it at a tag, so it must stay public. A new module needs `python scripts/package.py` to list it; CI fails until it does. A new micropython-lib dependency goes in `DEPS` in that script.
 
