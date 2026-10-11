@@ -13,8 +13,13 @@
 - **This repository runs on the release:** `vendor/corely/` is 1.0.0,
   byte-identical to the code it replaced; the demo tests pass against it and
   against a checkout through `CORELY_PATH`.
-- **Not yet done on the board** (it was on a charger): `mip install` from
-  GitHub, and a deploy from `vendor/corely`.
+- **Checked on the board** (Pico 2 W) after the release: `mpremote mip install
+  github:ultrabstrong/Corely.MicroPython@Corely.MicroPython-v1.0.0` installs
+  every module and its three dependencies, and they import; Raspberry-Pi's
+  `deploy.py` from `vendor/corely` (1.0.0) deploys and boots.
+- **Found on the board:** release 1.0.0 reports `corely.__version__` as 0.1.0.
+  Fixed in 1.0.1 (both versions now agree, and `tests/test_version.py` keeps
+  them agreeing); not tagged, since tags wait for the owner.
 
 ## Context
 

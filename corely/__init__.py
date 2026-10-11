@@ -10,4 +10,4 @@ would drag the BLE modules (and their aioble dependency) into RAM even for a
 project that only blinks an LED.
 """
 
-__version__ = '0.1.0'
+__version__ = '1.0.1'
