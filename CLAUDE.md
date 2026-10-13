@@ -9,7 +9,7 @@ Part of the Corely suite: asyncio building blocks for MicroPython devices, impor
 - **Board agnostic.** It may rely on `machine`, `network` and `aioble`, but not on anything Pico specific, and its docs say "device", not "Pico". Wiring assumptions (LED and button polarity) belong in constructor arguments.
 - **No I/O it was not given.** Credentials, settings and file paths are the application's: `WiFiConnection` takes an ssid and password, `BootGuard` takes the path of its count.
 
-Plans for reviewable changes live in `Plans/{New,InProgress,Completed}/`.
+Plans for reviewable changes live in `Plans/{New,InProgress,Completed}/`. When the work ships, its plan moves to `Completed/` in the same push, with a status line saying what was released and an "As built" section for anything that turned out differently. Never leave it for a later push.
 
 ## Test
 
